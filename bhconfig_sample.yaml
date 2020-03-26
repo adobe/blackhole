@@ -1,0 +1,5 @@
+serve:
+  - "http://:80"
+tls:
+  cert: /path/to/certs/www.foobar.com.pem
+  privkey: /path/to/certs/www.foobar.com.pem

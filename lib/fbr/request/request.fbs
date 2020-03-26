@@ -1,0 +1,10 @@
+namespace fbr;
+
+// Everything execept body must be UTF-8
+table Request {
+    id:string;
+    method:string;
+    uri:string;
+    headers:string;
+    body:[ubyte];
+}
