@@ -96,3 +96,19 @@ INSTALLING
   
 * To build for another machine (different architecture/os)
   * Run `./build-all-archs.sh` (builds for Windows, Linux, as well as MacOS) 
+
+Code Documentation (For contributors)
+=======
+This is a binary package, not a library, but some of the components are still written as reusable libraries and the
+documentation is available here. Internal APIs may not stable and would change. Please import with caution.
+
+[github.com/adobe/blackhole/lib/archive/file](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive/file)
+
+[github.com/adobe/blackhole/lib/archive/request](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive/request)
+
+[github.com/adobe/blackhole/lib/fbr](https://pkg.go.dev/github.com/adobe/blackhole/lib/fbr)
+
+[github.com/adobe/blackhole/lib/sender](https://pkg.go.dev/github.com/adobe/blackhole/lib/sender)
+
+[github.com/adobe/blackhole/lib/slicehacks](https://pkg.go.dev/github.com/adobe/blackhole/lib/slicehacks)
+
