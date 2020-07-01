@@ -5,7 +5,7 @@
    - Pretends to be your real HTTP API/server
    - Consumes everything thrown at it (any path, any "host")
    - Reponds with a 200 and empty body
-   - No pre-canned reponse, but it will be added soon.
+   - No pre-canned reponse yet
     
  * Record & Replay
  
