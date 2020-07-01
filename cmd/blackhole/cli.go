@@ -45,13 +45,14 @@ type cmdArgs struct {
 	bufferSize   int // for performance testing only
 	outputDir    string
 	numThreads   int
+	skip_stats   bool
 }
 
 func processCmdline() (args cmdArgs, err error) {
 
 	// usage is customized to include Version number
 	var usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of %s (Build ts: %s):\n", os.Args[0], buildTS)
+		fmt.Fprintf(os.Stderr, "Usage of %s (Build ts: %s)\nPlease see bhconfig_sample.yaml to configure http port and tls\n\n", os.Args[0], buildTS)
 		pflag.PrintDefaults()
 	}
 
@@ -65,6 +66,8 @@ func processCmdline() (args cmdArgs, err error) {
 		"(for debug only) Block profile this run")
 	pflag.BoolVarP(&args.verbose, "verbose", "v", false,
 		"Verbose output")
+	pflag.BoolVarP(&args.skip_stats, "skip-stats", "", false,
+		"Skip stats (slight performance increase)")
 	pflag.BoolVarP(&args.compress, "compress", "c", false,
 		"Compress output (or not)")
 	pflag.IntVarP(&args.bufferSize, "buffer-size", "b", 0,

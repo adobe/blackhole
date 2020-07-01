@@ -90,8 +90,15 @@ func main() {
 		log.Fatalf("TLS setup failed:%+v", err)
 	}
 
+	if args.skip_stats && args.outputDir != "" {
+		log.Printf("Skipping stats is useful only if you also avoid saving requests")
+		args.skip_stats = false
+	}
+
 	setupCleanupHandlers(rc, args)
-	setupWorkflowHandlers(rc, args)
+	if !args.skip_stats {
+		setupWorkflowHandlers(rc, args)
+	}
 	lns, err := createListeners(cfg)
 	if err != nil {
 		log.Fatalf("Unable to start listeners: %+v", err)
@@ -130,17 +137,15 @@ func setupWorkflowHandlers(rc *runtimeContext, args cmdArgs) {
 
 	go statsPrinter(rc)
 
-	if args.outputDir != "" {
-		rc.wgConsumers.Add(args.numThreads)
-		recordReqChan = make(chan *request.MarshalledRequest, 10000)
-		for i := 0; i < args.numThreads; i++ {
-			go func(j int) {
-				err := requestConsumer(j, rc)
-				if err != nil {
-					log.Fatalf("%+v", err)
-				}
-			}(i)
-		}
+	rc.wgConsumers.Add(args.numThreads)
+	recordReqChan = make(chan *request.MarshalledRequest, 10000)
+	for i := 0; i < args.numThreads; i++ {
+		go func(j int) {
+			err := requestConsumer(j, rc, args.outputDir == "")
+			if err != nil {
+				log.Fatalf("%+v", err)
+			}
+		}(i)
 	}
 
 }

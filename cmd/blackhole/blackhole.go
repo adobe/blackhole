@@ -25,11 +25,15 @@ import (
 
 // requestConsumer is called as a goroutine, handling
 // a single recorder file. To maximize IO, there will be many such recorder threads
-func requestConsumer(grID int, rc *runtimeContext) (err error) {
+// when dummy = true, the worker just counts requests
+func requestConsumer(grID int, rc *runtimeContext, dummy bool) (err error) {
 
-	rf, err := file.NewArchiveFile(rc.outDir, rc.compress, rc.bufferSize)
-	if err != nil {
-		return errors.Wrapf(err, "Unable to create archive file for worker %d", grID)
+	var rf *file.Archive
+	if !dummy {
+		rf, err = file.NewArchiveFile(rc.outDir, rc.compress, rc.bufferSize)
+		if err != nil {
+			return errors.Wrapf(err, "Unable to create archive file for worker %d", grID)
+		}
 	}
 
 	numRequests := 0
@@ -55,7 +59,7 @@ Loop:
 			log.Printf("#%d# Received %d requests", grID, numRequests)
 
 		case <-tickerSave.C:
-			if numRequests > numRequestsAtLastSave { // there is something to rotate
+			if !dummy && numRequests > numRequestsAtLastSave { // there is something to rotate
 				err = rf.RotateArchiveFile()
 				numRequestsAtLastSave = numRequests
 			}
@@ -65,22 +69,25 @@ Loop:
 				break Loop
 			}
 			numRequests++
-
-			err = rf.SaveRequest(req, false)
-			if err != nil {
-				msg := fmt.Sprintf("FATAL: Writing to file %s failed.", rf.Name)
-				log.Printf("%s: Error: %+v", msg, err)
-				return errors.Wrap(err, msg)
+			if !dummy {
+				err = rf.SaveRequest(req, false)
+				if err != nil {
+					msg := fmt.Sprintf("FATAL: Writing to file %s failed.", rf.Name)
+					log.Printf("%s: Error: %+v", msg, err)
+					return errors.Wrap(err, msg)
+				}
 			}
 		}
 	}
 
-	err = rf.Close()
-	if err != nil {
-		log.Fatalf("#%d# Error closing recorder file: %v", grID, err)
+	if !dummy {
+		err = rf.Close()
+		if err != nil {
+			log.Fatalf("#%d# Error closing recorder file: %v", grID, err)
+		}
+		log.Printf("#%d# Done recording %d requests.", grID, numRequests)
 	}
 
-	log.Printf("#%d# Done recording %d requests.", grID, numRequests)
 	rc.wgConsumers.Done()
 
 	return err
