@@ -102,6 +102,10 @@ INSTALLING
 * To build for another machine (different architecture/os)
   * Run `./build-all-archs.sh` (builds for Windows, Linux, as well as MacOS) 
 
+Design
+=======
+![Design](design.png)
+
 Code Documentation (For contributors)
 =======
 This is a binary package, not a library, but some of the components are still written as reusable libraries and the
