@@ -61,8 +61,9 @@ I use wrk to generate traffic as shown below
 
 * Test 1: **Server & Client**: Both running on a Macbook Pro
   * 110,000+ request/sec accepted, read, and then discarded. Run with `--skip-stats`. Request *counting* has a slight overhead, but that is the only thing on top of vanilla fast-http hello-world at this point.
-  * 100,000 request/sec saved to disk (each with a 2k payload). Roughly 13 GB on disk. Almost no extra overhead for disk i/o. `wrk` and other things running on the Mac is taking up some of the CPU, leaving only 4 cores for the app in either case.
+  * 100,000 request/sec saved to disk (each with a 2k payload). Roughly 13 GB on disk for 6 million requests sent during a 1 minute test. Almost no overhead for disk i/o. `wrk` and other things running on the Mac is taking up some of the CPU, leaving only 4 cores for the app in either case.
   * Data payload is made random to trigger the pathological case for compression.
+  * 95,000 req/sec with 4:1 compression ratio with LZ4 compression is enabled. Ratio depends on payload, but at least the body is made random in this test. Now disk size for 6 million requests is only about 2.8 G. [LZ4](https://github.com/lz4/lz4) is truly awesome and give us excellent compression without slowing us down.
 
 * Test 2: **Server**: One L8s vm on Azure-US-West, **Client:** One DS2 v3 in Azure-US-East as client
   * 6,000 to 7,000 request/sec average with
