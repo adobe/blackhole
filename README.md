@@ -1,11 +1,16 @@
 # blackhole
 
 ### Introduction
- * Backhole is an HTTP sink, to be used for testing & protoyping. Good for testing your outgoing http senders (proxies, http forwarders etc)
+ * Backhole is an HTTP sink, to be used for testing & protoyping. Good for testing your outgoing http senders or collect sample request data for your real webservice.
    - Pretends to be your real HTTP API/server
    - Consumes everything thrown at it (any path, any "host")
    - Reponds with a 200 and empty body
    - No pre-canned reponse yet
+   - You can also collect & sample incoming requests to your real webservice by pairing this tool with something like [tcpcopy](https://github.com/session-replay-tools/tcpcopy)
+
+      * Real server responds to your client
+      * tcpcopy ignores fake response from blackhole
+      * blackhole records requests.
     
  * Record & Replay
  
