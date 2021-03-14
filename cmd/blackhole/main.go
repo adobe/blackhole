@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/adobe/blackhole/lib/archive/request"
+	"github.com/adobe/blackhole/lib/request"
 	dprofile "github.com/pkg/profile"
 	"github.com/valyala/fasthttp"
 )

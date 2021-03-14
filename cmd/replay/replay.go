@@ -18,8 +18,8 @@ import (
 	"log"
 	"sync"
 
-	"github.com/adobe/blackhole/lib/archive/file"
-	"github.com/adobe/blackhole/lib/archive/request"
+	"github.com/adobe/blackhole/lib/archive"
+	"github.com/adobe/blackhole/lib/request"
 	"github.com/adobe/blackhole/lib/sender"
 	"github.com/pkg/errors"
 )
@@ -30,7 +30,7 @@ func replayFile(fileName string, args *cmdArgs) (err error) {
 	const archiveFileReadBufSize = 65536 // 64 K
 	var numRequestsMade = 0
 
-	rf, err := file.OpenArchiveFile(fileName, archiveFileReadBufSize)
+	rf, err := archive.OpenArchive(fileName, archiveFileReadBufSize)
 	if err != nil {
 		return errors.Wrapf(err, "Unable to open archive file: %s", fileName)
 	}
@@ -62,7 +62,7 @@ Loop:
 	for {
 		var umr *request.UnmarshalledRequest
 		var n int
-		umr, err = rf.GetNextRequest(false)
+		umr, err = request.GetNextRequest(rf, false)
 		if err != nil {
 			if err == io.EOF { // only valid non-error "error" - signifies end of file.
 				err = nil

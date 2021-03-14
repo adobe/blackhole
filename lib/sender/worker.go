@@ -31,8 +31,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adobe/blackhole/lib/archive/request"
 	"github.com/adobe/blackhole/lib/fbr"
+	"github.com/adobe/blackhole/lib/request"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
 )

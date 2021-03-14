@@ -17,41 +17,43 @@ package file
 
 import (
 	"bufio"
-	"encoding/binary"
 	"fmt"
+	"github.com/pierrec/lz4/v3"
+	"github.com/pkg/errors"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
-	"path"
 	"strings"
 	"time"
-
-	"github.com/adobe/blackhole/lib/archive/request"
-	"github.com/pierrec/lz4/v3"
-	"github.com/pkg/errors"
 	// "github.com/gogo/protobuf/proto"
 )
 
-type Archive struct {
+type FileArchive struct {
 	writing      bool
-	fp           *os.File      // Underlyinf FP. Needed to close and flush after we are done.
+	fp           *os.File      // Underlying FP. Needed to close and flush after we are done.
 	zw           *lz4.Writer   // Only if compression is enabled.
 	zr           *lz4.Reader   // Only if compression is enabled.
 	bw           *bufio.Writer // All writes are buffered
 	br           *bufio.Reader // All writes are buffered
-	Name         string        // name, for debugging/printing only
+	name         string        // name, for debugging/printing only
 	FinalName    string
 	outDir       string
+	prefix       string
+	extension    string
 	compress     bool
 	bufferSize   int
 	bytesWritten int64 // to see if file is empty at Close (during finalize)
 }
 
+func (rf *FileArchive) Name() string {
+	return rf.name
+}
+
 // Write satisfies io.Writer interface - main logic is the transparent
 // write to LZ4, Bufio, or Raw FP depending on how the file was
 // opened
-func (rf *Archive) Write(buf []byte) (int, error) {
+func (rf *FileArchive) Write(buf []byte) (int, error) {
 
 	if !rf.writing {
 		return 0, errors.New("file is not opened for write")
@@ -78,7 +80,7 @@ func (rf *Archive) Write(buf []byte) (int, error) {
 // Read satisfies io.Reader interface - main logic is the transparent
 // read from LZ4, Bufio, or Raw FP depending on how the file was
 // opened
-func (rf *Archive) Read(p []byte) (n int, err error) {
+func (rf *FileArchive) Read(p []byte) (n int, err error) {
 
 	if rf.writing {
 		return 0, errors.New("file is not opened for read")
@@ -94,11 +96,11 @@ func (rf *Archive) Read(p []byte) (n int, err error) {
 	}
 
 	// else read from the underlying file directly
-	return rf.br.Read(p)
+	return rf.fp.Read(p)
 }
 
 // Flush complements io.Writer
-func (rf *Archive) Flush() (err error) {
+func (rf *FileArchive) Flush() (err error) {
 
 	if rf.zw != nil {
 		err = rf.zw.Flush()
@@ -118,7 +120,7 @@ func (rf *Archive) Flush() (err error) {
 // Close works for both Read and Write. Additional
 // logic for write to finalize the file from temp-name to
 // final-name
-func (rf *Archive) Close() (err error) {
+func (rf *FileArchive) Close() (err error) {
 
 	err = rf.Flush()
 	if err != nil {
@@ -151,101 +153,18 @@ func (rf *Archive) Close() (err error) {
 	return err
 }
 
-// SaveRequest saves the data held by MarshalledRequest to the archive file.
-// MarshalledRequest typically holds a flatbuffer builder that is already
-func (rf *Archive) SaveRequest(req *request.MarshalledRequest, flushNow bool) (err error) {
-
-	if !rf.writing {
-		return errors.New("file is not opened for write")
-	}
-
-	const UINT64LEN = 8
-	var lbuf = make([]byte, UINT64LEN)
-
-	fbBytes := req.Bytes()
-	fbLen := len(fbBytes)
-
-	defer req.Release()
-
-	binary.LittleEndian.PutUint64(lbuf, uint64(fbLen))
-
-	n, err := rf.Write(lbuf)
-	if err != nil {
-		msg := fmt.Sprintf("FATAL: Wrote only %d bytes, %d expected.", n, UINT64LEN)
-		log.Printf("%s: Error: %+v", msg, err)
-		return errors.Wrap(err, msg)
-	}
-
-	n, err = rf.Write(fbBytes)
-	if err != nil {
-		msg := fmt.Sprintf("FATAL: Wrote only %d bytes, %d expected.", n, fbLen)
-		log.Printf("%s: Error: %+v", msg, err)
-		return errors.Wrap(err, msg)
-	}
-
-	if flushNow {
-		return rf.Flush()
-	}
-	return err
-}
-
-// GetNextRequest reads an archived request from a stream (io.Reader), allocates
-// a buffer from a Pool and returns a lease to that buffer. Caller must do the following
-//
-// 	1. Call umr, err := GetNextRequest() for the next item.
-//	2. Handle io.EOF properly as not an error, but end of processing.
-// 	3. req := umr.Request() <- Use the flatbuff generated types and code
-// 	4. Call umr.Release() with the original slice to free
-//
-// Why do we return a `*UnmarshalledRequest` instead of a `fbr.Request` object?
-//
-// Buffer pool needs to be managed at the level of `UnmarshalledRequest` to save allocations
-// If `fbr.Request` is returned instead of the wrapper object, it may not work. Caller can't
-// use a pointer to `fbr.Request` and return the original buffer to the pool. More research
-// is needed to identity if the intermediate object `*UnmarshalledRequest` can be removed.
-// Anyways this intermediate object does not cause inefficiency,
-// except for the wierdness in the API
-func (rf *Archive) GetNextRequest(waitForData bool) (umr *request.UnmarshalledRequest, err error) {
-
-	umr = request.CreateUMRequest()
-	const UINT64LEN = 8
-
-	sizeBuf := make([]byte, UINT64LEN)
-	_, err = readFull(rf, sizeBuf, waitForData)
-	if err != nil {
-		if err == io.EOF {
-			umr.Release()
-			return nil, io.EOF
-		}
-		umr.Release()
-		return nil, err
-	}
-
-	fbLen := int(binary.LittleEndian.Uint64(sizeBuf))
-	umr.Grow(fbLen)
-	n, err := readFull(rf, umr.Bytes(), waitForData)
-	if err != nil {
-		umr.Release()
-		msg := fmt.Sprintf("FATAL: Read only %d bytes, %d expected.", n, fbLen)
-		log.Printf("%s: Error: %+v", msg, err)
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF // at this stage simple end-of-file is not allowed
-		}
-		err = errors.Wrapf(err, msg) // No longer just an end-of-file "EOF" error
-		return nil, err
-	}
-
-	// req = archive.GetRootAsRequest(lease[:fbLen], 0)
-	return umr, nil
-}
-
 // NewArchiveFile creates a new recorder file (for writing). The caller must call
 // `rf.Close()` on the resulting handle to close out the file.
 // File is atomically renamed to the final name only after everything
-// is flushed to disk and file is closed. `*Archive` returned is an io.Writer
-func NewArchiveFile(outDir string, compress bool, bufferSize int) (rf *Archive, err error) {
+// is flushed to disk and file is closed. `*FileArchive` returned is an io.Writer
+func NewArchiveFile(outDir, prefix, extension string, compress bool, bufferSize int) (rf *FileArchive, err error) {
 
-	rf = &Archive{writing: true, outDir: outDir, compress: compress, bufferSize: bufferSize}
+	rf = &FileArchive{writing: true,
+		outDir:     outDir,
+		prefix:     prefix,
+		extension:  extension,
+		compress:   compress,
+		bufferSize: bufferSize}
 
 	err = rf.RotateArchiveFile()
 	if err != nil {
@@ -256,29 +175,31 @@ func NewArchiveFile(outDir string, compress bool, bufferSize int) (rf *Archive, 
 
 // RotateArchiveFile creates a new archive file or if one already exists,
 // then it closes the current one and create another empty file
-func (rf *Archive) RotateArchiveFile() (err error) {
+func (rf *FileArchive) RotateArchiveFile() (err error) {
 
 	if !rf.writing {
 		return errors.New("file is not opened for write")
 	}
 
 	if rf.fp != nil {
-		rf.Close()
+		err = rf.Close()
+		if err != nil {
+			return errors.Wrapf(err, "Error closing the current archive file")
+		}
 	}
-	fqdn := path.Join(rf.outDir, "requests")
-	err = os.MkdirAll(fqdn, 0755)
+	err = os.MkdirAll(rf.outDir, 0755)
 	if err != nil {
 		return errors.Wrapf(err, "Unable to create temporary directory")
 	}
 	n := time.Now()
 	// template time AKA golang magic time is Mon Jan 2 15:04:05 -0700 MST 2006
 	ts := n.Format("20060102150405") // playground: http://play.golang.org/p/GRyJmkDevM
-	rf.fp, err = ioutil.TempFile(fqdn, "requests_"+ts+"_")
+	rf.fp, err = ioutil.TempFile(rf.outDir, fmt.Sprintf("%s_%s_", rf.prefix, ts))
 	if err != nil {
 		return errors.Wrapf(err, "Unable to open temporary file")
 	}
-	rf.Name = rf.fp.Name()
-	rf.FinalName = rf.Name + ".fbf"
+	rf.name = rf.fp.Name()
+	rf.FinalName = fmt.Sprintf("%s.%s", rf.name, rf.extension)
 
 	var stream io.Writer
 	stream = rf.fp
@@ -294,14 +215,14 @@ func (rf *Archive) RotateArchiveFile() (err error) {
 		rf.FinalName += ".lz4"
 	}
 
-	log.Printf("Created file %v", rf.Name)
+	log.Printf("Created file %v", rf.name)
 	return err
 }
 
-// OpenArchiveFile opens an archive file for reading. `*Archive` returned is an io.Reader
-func OpenArchiveFile(fileName string, bufferSize int) (rf *Archive, err error) {
+// OpenArchiveFile opens an archive file for reading. `*FileArchive` returned is an io.Reader
+func OpenArchiveFile(fileName string, bufferSize int) (rf *FileArchive, err error) {
 
-	rf = &Archive{writing: false}
+	rf = &FileArchive{writing: false}
 
 	rf.fp, err = os.Open(fileName)
 	if err != nil {
@@ -324,7 +245,7 @@ func OpenArchiveFile(fileName string, bufferSize int) (rf *Archive, err error) {
 // finalize will rename the temporary file to its final name. File should be considered
 // incomplete if it does not contain `.fbf` or `.fbf.lz4` extension.
 // See longer docs there.
-func (rf *Archive) finalizeArchiveFile() (err error) {
+func (rf *FileArchive) finalizeArchiveFile() (err error) {
 
 	if !rf.writing {
 		return errors.New("file is not opened for write")
@@ -332,15 +253,15 @@ func (rf *Archive) finalizeArchiveFile() (err error) {
 
 	if rf.bytesWritten == 0 {
 
-		log.Printf("Deleting empty file %s", rf.Name)
-		os.Remove(rf.Name)
+		log.Printf("Deleting empty file %s", rf.name)
+		err = os.Remove(rf.name)
 		return err
 
 	}
 
-	fi, err := os.Stat(rf.Name)
+	fi, err := os.Stat(rf.name)
 	if err != nil {
-		err = errors.Wrapf(err, "unable to stat file %s", rf.Name)
+		err = errors.Wrapf(err, "unable to stat file %s", rf.name)
 		return err
 	}
 
@@ -348,12 +269,12 @@ func (rf *Archive) finalizeArchiveFile() (err error) {
 	// only touch the Group and Other sections
 	fileMode |= 044
 
-	err = os.Rename(rf.Name, rf.FinalName)
+	err = os.Rename(rf.name, rf.FinalName)
 	if err != nil {
-		err = errors.Wrapf(err, "unable to rename archive file: %s", rf.Name)
+		err = errors.Wrapf(err, "unable to rename archive file: %s", rf.name)
 		return err
 	}
-	log.Printf("Renamed %s to %s", rf.Name, rf.FinalName)
+	log.Printf("Renamed %s to %s", rf.name, rf.FinalName)
 
 	err = os.Chmod(rf.FinalName, fileMode)
 	if err != nil {
