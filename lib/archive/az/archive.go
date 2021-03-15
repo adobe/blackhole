@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/adobe/blackhole/lib/archive/common"
 	"github.com/pierrec/lz4/v3"
 	"github.com/pkg/errors"
 	"io"
@@ -203,13 +204,13 @@ func NewArchiveFile(outDir, prefix, extension string, compress bool, bufferSize 
 
 	err = azInit()
 	if err != nil {
-		errors.Wrap(err, "Unable to initialize azure connection")
+		return nil, errors.Wrap(err, "Unable to initialize azure connection")
 	}
 
 	// https://play.golang.org/p/vZ4NZzi6vrK
 	parts := s3UrlRegex.FindStringSubmatch(outDir)
 	if len(parts) != 4 { // must be exactly 4 parts
-		errors.Wrap(err, "Unable to parse azure blob url format")
+		return nil, errors.Wrap(err, "Unable to parse azure blob url format")
 	}
 	containerName, directory := parts[2], parts[3]
 
@@ -288,7 +289,7 @@ func OpenArchiveFile(fileName string, bufferSize int) (rf *S3Archive, err error)
 
 	err = azInit()
 	if err != nil {
-		errors.Wrap(err, "Unable to initialize s3 connection")
+		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
 
 	rf = &S3Archive{writing: false}
@@ -348,7 +349,7 @@ func (rf *S3Archive) finalizeArchiveFile() (err error) {
 	var statChan = make(chan int64)
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go progressChannelMonitor(statChan, rf.name, finalFileSize, &wg)
+	go common.UploadProgressPrinter(statChan, rf.name, finalFileSize, &wg)
 
 	_, err = azblob.UploadFileToBlockBlob(context.Background(), finalFP, rf.blockBlobURL, azblob.UploadToBlockBlobOptions{
 		BlockSize:   4 * 1024 * 1024,
@@ -364,8 +365,7 @@ func (rf *S3Archive) finalizeArchiveFile() (err error) {
 
 	err = os.Remove(rf.name)
 	if err != nil {
-		err = errors.Wrapf(err, "unable to remove archive file %d after uploading to azure", rf.name)
-		return err
+		return errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", rf.name)
 	}
 
 	close(statChan)
@@ -375,27 +375,4 @@ func (rf *S3Archive) finalizeArchiveFile() (err error) {
 	rf.FinalName, rf.name = "", ""
 
 	return nil
-}
-
-func progressChannelMonitor(statChan chan int64, fileName string, fileSize int64, wg *sync.WaitGroup) {
-
-	defer wg.Done()
-	total := int64(0)
-	lastPrinted := int64(0)
-	fileName = path.Base(fileName)
-	for bytesTransferred := range statChan {
-		if bytesTransferred > total {
-			diff := bytesTransferred - lastPrinted
-			if diff > 1_000_000 {
-				log.Printf("%s: %d/%d (%2.02f %%)",
-					fileName, bytesTransferred, fileSize,
-					float64(bytesTransferred*100.0)/float64(fileSize))
-				lastPrinted = bytesTransferred
-			}
-		} else {
-			log.Printf("WARNING: Previous attempt failed for %s. Bytes transferred went from %d to %d",
-				fileName, total, bytesTransferred)
-		}
-		total = bytesTransferred
-	}
 }

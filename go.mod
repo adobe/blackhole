@@ -5,8 +5,9 @@ go 1.14
 require (
 	github.com/Azure/azure-pipeline-go v0.2.3
 	github.com/Azure/azure-storage-blob-go v0.13.0
-	github.com/aws/aws-sdk-go-v2/config v1.1.1
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.2.0
+	github.com/aws/aws-sdk-go-v2/config v1.1.2
+	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.0.3
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.2.1
 	github.com/frankban/quicktest v1.7.2 // indirect
 	github.com/google/flatbuffers v1.12.0
 	github.com/klauspost/compress v1.10.3 // indirect

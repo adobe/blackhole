@@ -3,6 +3,7 @@ package archive
 import (
 	"github.com/adobe/blackhole/lib/archive/az"
 	"github.com/adobe/blackhole/lib/archive/file"
+	"github.com/adobe/blackhole/lib/archive/s3f"
 	"github.com/pkg/errors"
 	"io"
 	"strings"
@@ -34,7 +35,11 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 			}
 			return rf, nil
 		case "s3":
-			panic("not implemented")
+			rf, err = s3f.NewArchiveFile(outDir, prefix, extension, compress, bufferSize)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Unable to create local file")
+			}
+			return rf, nil
 		}
 	}
 	return nil, errors.Errorf("Unsupported URL type")

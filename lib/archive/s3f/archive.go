@@ -22,32 +22,37 @@ import (
 	"github.com/pierrec/lz4/v3"
 	"github.com/pkg/errors"
 	"io"
+	"io/ioutil"
 	"log"
+	"os"
+	"path"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 	// "github.com/gogo/protobuf/proto"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var gS3Session struct {
 	sync.Mutex // Used only for writing. Not for reading
 	S3Client   *s3.Client
+	S3Uploader *manager.Uploader
 }
 
 var s3UrlRegex = regexp.MustCompile("([^/:]+)://([^/]+)/(.*?)$")
 
 type S3Archive struct {
 	writing      bool
-	wg           sync.WaitGroup
-	out          *io.PipeWriter // Underlying FP. Needed to close and flush after we are done.
-	in           *io.PipeReader // Underlying FP. Needed to close and flush after we are done.
-	zw           *lz4.Writer    // Used only if compression is enabled.
-	zr           *lz4.Reader    // Used only if compression is enabled.
-	bw           *bufio.Writer  // If set, all writes are buffered
-	br           *bufio.Reader  // If set, all reads are buffered
-	name         string         // name, for debugging/printing only
+	fp           *os.File      // Underlying FP. Needed to close and flush after we are done.
+	zw           *lz4.Writer   // Used only if compression is enabled.
+	zr           *lz4.Reader   // Used only if compression is enabled.
+	bw           *bufio.Writer // If set, all writes are buffered
+	br           *bufio.Reader // If set, all reads are buffered
+	name         string        // name, for debugging/printing only
+	FinalName    string
 	outDir       string
 	bucketName   string
 	directory    string
@@ -86,7 +91,7 @@ func (rf *S3Archive) Write(buf []byte) (int, error) {
 	}
 
 	// else write to the underlying file directly
-	return rf.out.Write(buf)
+	return rf.fp.Write(buf)
 }
 
 // Read satisfies io.Reader interface - main logic is the transparent
@@ -108,7 +113,7 @@ func (rf *S3Archive) Read(p []byte) (n int, err error) {
 	}
 
 	// else read from the underlying file directly
-	return rf.in.Read(p)
+	return rf.fp.Read(p)
 }
 
 // Flush complements io.Writer
@@ -122,7 +127,10 @@ func (rf *S3Archive) Flush() (err error) {
 		err = rf.bw.Flush()
 	}
 
-	// Nothing for raw io.PipeWriter
+	if err == nil && rf.fp != nil {
+		err = rf.fp.Sync()
+	}
+
 	return err
 }
 
@@ -147,14 +155,9 @@ func (rf *S3Archive) Close() (err error) {
 
 	rf.zr = nil
 
-	if rf.out != nil {
-		err = rf.out.Close()
-		rf.wg.Wait() // wait for s3 writer to finish
-		rf.out = nil
-	}
-	if rf.in != nil {
-		err = rf.in.Close()
-		rf.in = nil
+	if rf.fp != nil {
+		err = rf.fp.Close()
+		rf.fp = nil
 	}
 
 	rf.bw = nil
@@ -173,9 +176,10 @@ func s3Init() (err error) {
 	if gS3Session.S3Client == nil {
 		cfg, err := config.LoadDefaultConfig(context.TODO())
 		if err != nil {
-			errors.Wrap(err, "Unable to load default s3 config")
+			return errors.Wrap(err, "Unable to load default s3 config")
 		}
 		gS3Session.S3Client = s3.NewFromConfig(cfg)
+		gS3Session.S3Uploader = manager.NewUploader(gS3Session.S3Client)
 	}
 	return err
 }
@@ -188,13 +192,13 @@ func NewArchiveFile(outDir, prefix, extension string, compress bool, bufferSize 
 
 	err = s3Init()
 	if err != nil {
-		errors.Wrap(err, "Unable to initialize s3 connection")
+		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
 
 	// https://play.golang.org/p/vZ4NZzi6vrK
 	parts := s3UrlRegex.FindStringSubmatch(outDir)
 	if len(parts) != 4 { // must be exactly 4 parts
-		errors.Wrap(err, "Unable to parse s3 url format")
+		return nil, errors.Wrap(err, "Unable to parse s3 url format")
 	}
 	bucketName, directory := parts[2], parts[3]
 	rf = &S3Archive{writing: true,
@@ -221,38 +225,31 @@ func (rf *S3Archive) RotateArchiveFile() (err error) {
 		return errors.New("file is not opened for write")
 	}
 
-	if rf.out != nil {
+	if rf.fp != nil {
 		err = rf.Close()
 		if err != nil {
 			return errors.Wrapf(err, "Error closing the current archive file")
 		}
 	}
-	var reader *io.PipeReader
-	reader, rf.out = io.Pipe()
 
 	n := time.Now()
 	// template time AKA golang magic time is Mon Jan 2 15:04:05 -0700 MST 2006
 	ts := n.Format("20060102150405") // playground: http://play.golang.org/p/GRyJmkDevM
-	rf.name = fmt.Sprintf("%s/%s_%s_", rf.directory, rf.prefix, ts)
+	rf.fp, err = ioutil.TempFile("", fmt.Sprintf("%s_%s_", rf.prefix, ts))
+	if err != nil {
+		return errors.Wrap(err, "Unable to open temporary file for writing")
+	}
+	rf.name = rf.fp.Name()
+	rf.FinalName = fmt.Sprintf("%s/%s.%s", rf.directory, path.Base(rf.name), rf.extension)
 	if rf.compress {
-		rf.name += ".lz4"
+		rf.FinalName += ".lz4"
 	}
 
-	rf.wg.Add(1)
-	go func(bucket string, filepath string, reader io.Reader, wg *sync.WaitGroup) {
-		defer wg.Done()
-		gS3Session.S3Client.PutObject(context.Background(), &s3.PutObjectInput{
-			Bucket: &bucket,
-			Key:    &filepath,
-			Body:   reader,
-		})
-	}(rf.bucketName, rf.name, reader, &rf.wg)
-
 	var stream io.Writer
-	stream = rf.out
+	stream = rf.fp
 	if rf.bufferSize > 0 {
 		log.Printf("Buffer: %d", rf.bufferSize)
-		rf.bw = bufio.NewWriterSize(rf.out, rf.bufferSize)
+		rf.bw = bufio.NewWriterSize(rf.fp, rf.bufferSize)
 		stream = rf.bw
 	}
 
@@ -270,73 +267,96 @@ func OpenArchiveFile(fileName string, bufferSize int) (rf *S3Archive, err error)
 
 	err = s3Init()
 	if err != nil {
-		errors.Wrap(err, "Unable to initialize s3 connection")
+		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
 
 	rf = &S3Archive{writing: false}
 
-	/*
-		rf.fp, err = os.Open(fileName)
-		if err != nil {
-			log.Printf("Unable to open file %s: +%v", fileName, err)
-			return nil, errors.Wrapf(err, "Unable to open file %s", fileName)
-		}
-		var stream io.Reader
-		stream = rf.fp
-		if strings.HasSuffix(strings.ToLower(fileName), ".lz4") {
-			rf.zr = lz4.NewReader(rf.fp)
-			stream = rf.zr
-		}
-		if bufferSize > 0 {
-			rf.br = bufio.NewReaderSize(stream, bufferSize)
-		}
-	*/
+	rf.fp, err = os.Open(fileName)
+	if err != nil {
+		log.Printf("Unable to open file %s: +%v", fileName, err)
+		return nil, errors.Wrapf(err, "Unable to open file %s", fileName)
+	}
+	var stream io.Reader
+	stream = rf.fp
+	if strings.HasSuffix(strings.ToLower(fileName), ".lz4") {
+		rf.zr = lz4.NewReader(rf.fp)
+		stream = rf.zr
+	}
+	if bufferSize > 0 {
+		rf.br = bufio.NewReaderSize(stream, bufferSize)
+	}
 	return rf, nil
 }
 
 // finalizeArchiveFile is the companion function to CreateArchiveFile().
-// finalize will rename the temporary file to its final name. File should be considered
-// incomplete if it does not contain `.fbf` or `.fbf.lz4` extension.
-// See longer docs there.
+// finalize will upload to S3.
 func (rf *S3Archive) finalizeArchiveFile() (err error) {
 
 	if !rf.writing {
 		return errors.New("file is not opened for write")
 	}
 
-	/*
-		if rf.bytesWritten == 0 {
+	if rf.bytesWritten == 0 {
 
-			log.Printf("Deleting empty file %s", rf.name)
-			err = os.Remove(rf.name)
-			return err
+		log.Printf("Deleting empty file %s", rf.name)
+		err = os.Remove(rf.name)
+		return err
 
-		}
+	}
 
-		fi, err := os.Stat(rf.name)
-		if err != nil {
-			err = errors.Wrapf(err, "unable to stat file %s", rf.name)
-			return err
-		}
+	finalFP, err := os.Open(rf.name)
+	if err != nil {
+		return errors.Wrapf(err, "unable to reopen archive file: %s", rf.FinalName)
+	}
+	defer finalFP.Close()
 
-		fileMode := fi.Mode()
-		// only touch the Group and Other sections
-		fileMode |= 044
+	log.Printf("L:%s => AZ:%s [BEGIN]", rf.name, rf.FinalName)
 
-		err = os.Rename(rf.name, rf.FinalName)
-		if err != nil {
-			err = errors.Wrapf(err, "unable to rename archive file: %s", rf.name)
-			return err
-		}
-		log.Printf("Renamed %s to %s", rf.name, rf.FinalName)
+	/* Progress tracking is not possible with S3manager API
+	 * suggested work around is hacky
+	 * https://github.com/aws/aws-sdk-go/pull/1868#issuecomment-514097090
 
-		err = os.Chmod(rf.FinalName, fileMode)
-		if err != nil {
-			err = errors.Wrapf(err, "unable to chmod archive file: %s", rf.FinalName)
-			return err
-		}
+	fi, err := os.Stat(rf.name)
+	if err != nil {
+		return errors.Wrapf(err, "unable to stat file %s", rf.name)
+	}
 
-		rf.bytesWritten = 0 // reset the tracker
+	finalFileSize := fi.Size()
+	// this will be different from `rf.bytesWritten`
+	// because of possible compression
+
+	var statChan = make(chan int64)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go common.UploadProgressPrinter(statChan, rf.name, finalFileSize, &wg)
+	*/
+
+	_, err = gS3Session.S3Uploader.Upload(context.Background(), &s3.PutObjectInput{
+		Bucket: &rf.bucketName,
+		Key:    &rf.FinalName,
+		Body:   finalFP,
+	})
+	if err != nil {
+		return errors.Wrapf(err, "unable to reopen archive file: %s", rf.FinalName)
+	}
+	rf.bytesWritten = 0 // reset the tracker
+	rf.FinalName, rf.name = "", ""
+
+	log.Printf("L:%s => AZ:%s [END]", rf.name, rf.FinalName)
+
+	err = os.Remove(rf.name)
+	if err != nil {
+		return errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", rf.name)
+	}
+
+	/* Progress tracking is not possible with S3manager API
+	 * suggested work around is hacky
+	 * https://github.com/aws/aws-sdk-go/pull/1868#issuecomment-514097090
+
+	close(statChan)
+	wg.Wait() // Waiting for status monitor to exit
+
 	*/
 
 	return nil
