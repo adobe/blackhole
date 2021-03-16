@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -62,7 +62,7 @@ Loop:
 
 		case <-tickerSave.C:
 			if !dummy && numRequests > numRequestsAtLastSave { // there is something to rotate
-				err = rf.RotateArchiveFile()
+				err = rf.Rotate()
 				numRequestsAtLastSave = numRequests
 			}
 
@@ -74,7 +74,7 @@ Loop:
 			if !dummy {
 				err = req.SaveRequest(rf, false)
 				if err != nil {
-					msg := fmt.Sprintf("FATAL: Writing to file %s failed.", rf.Name())
+					msg := fmt.Sprintf("FATAL: writing to file %s failed.", rf.Name())
 					log.Printf("%s: Error: %+v", msg, err)
 					return errors.Wrap(err, msg)
 				}
