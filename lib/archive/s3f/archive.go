@@ -23,17 +23,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/pkg/errors"
+	"io/ioutil"
 	"log"
 	"os"
 	"path"
 	"regexp"
+	"strings"
 	"sync"
 )
 
 var gS3Session struct {
-	sync.Mutex // Used only for writing. Not for reading
-	S3Client   *s3.Client
-	S3Uploader *manager.Uploader
+	sync.Mutex   // Used only for writing. Not for reading
+	S3Client     *s3.Client
+	S3Uploader   *manager.Uploader
+	S3Downloader *manager.Downloader
 }
 
 var s3UrlRegex = regexp.MustCompile("([^/:]+)://([^/]+)/(.*?)$")
@@ -54,6 +57,7 @@ func s3Init() (err error) {
 		}
 		gS3Session.S3Client = s3.NewFromConfig(cfg)
 		gS3Session.S3Uploader = manager.NewUploader(gS3Session.S3Client)
+		gS3Session.S3Downloader = manager.NewDownloader(gS3Session.S3Client)
 	}
 	return err
 }
@@ -76,10 +80,10 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 	}
 	bucketName, s3SubDir := parts[2], parts[3]
 	rf = &S3Archive{BasicArchive: *common.NewBasicArchive("",
-		prefix, extension, compress, bufferSize,
-		rf.finalizeArchive),
+		prefix, extension, compress, bufferSize),
 		bucketName: bucketName,
 		s3SubDir:   s3SubDir}
+	rf.Finalizer = rf.finalizeArchive
 
 	err = rf.Rotate()
 	if err != nil {
@@ -88,7 +92,7 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 	return rf, err
 }
 
-// OpenArchive opens a single archive file for reading. `*S3Archive` returned is an io.Reader
+// OpenArchive opens an archive file for reading. `*S3Archive` returned is an io.Reader
 func OpenArchive(fileName string, bufferSize int) (rf *S3Archive, err error) {
 
 	err = s3Init()
@@ -96,7 +100,29 @@ func OpenArchive(fileName string, bufferSize int) (rf *S3Archive, err error) {
 		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
 
-	rfi, err := common.OpenArchive(fileName, bufferSize)
+	parts := s3UrlRegex.FindStringSubmatch(fileName)
+	if len(parts) != 4 { // must be exactly 4 parts
+		return nil, errors.Wrap(err, "Unable to parse azure blob url format")
+	}
+
+	bucketName, filePath := parts[2], parts[3]
+
+	fp, err := ioutil.TempFile("", fmt.Sprintf("tmp_*_%s", path.Base(filePath)))
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to create temp file")
+	}
+
+	log.Printf("AZ:%s => L:%s [BEGIN]", filePath, fp.Name())
+	_, err = gS3Session.S3Downloader.Download(context.Background(), fp, &s3.GetObjectInput{
+		Bucket: &bucketName,
+		Key:    &filePath,
+	})
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to download archive file: %s", filePath)
+	}
+	log.Printf("AZ:%s => L:%s [END]", filePath, fp.Name())
+
+	rfi, err := common.OpenArchive(fp.Name(), bufferSize, true)
 	if err != nil {
 		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
@@ -105,9 +131,11 @@ func OpenArchive(fileName string, bufferSize int) (rf *S3Archive, err error) {
 
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will upload to S3.
-func (rf *S3Archive) finalizeArchive(filePath string, fileSize int64) (err error) {
+func (rf *S3Archive) finalizeArchive() (err error) {
 
+	filePath := rf.Name()
 	finalPath := fmt.Sprintf("%s/%s", rf.s3SubDir, path.Base(filePath))
+	finalPath = strings.TrimSuffix(finalPath, ".tmp")
 
 	finalFP, err := os.Open(filePath)
 	if err != nil {

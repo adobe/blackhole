@@ -31,49 +31,55 @@ import (
 	"time"
 )
 
-// Finalizer is a callback that will be called on Close.
+// FinalizerFunc is a callback that will be called on Close.
 // Typically one would rename the file to the final desired name
 // OR upload the file to S3 or Azure Blobstore. Users of this
 // library must provide this call back implementation.
-type Finalizer func(string, int64) (err error)
+type FinalizerFunc func() (err error)
 
 // BasicArchive encapsulates some common functionality between
 // S3Archive, FileArchive, and AZArchive
 type BasicArchive struct {
-	writing      bool
-	fp           *os.File      // Underlying FP. Needed to close and flush after we are done.
-	zw           *lz4.Writer   // Used only if compression is enabled.
-	zr           *lz4.Reader   // Used only if compression is enabled.
-	bw           *bufio.Writer // If set, all writes are buffered
-	br           *bufio.Reader // If set, all reads are buffered
-	fqfn         string        // name, for debugging/printing only
-	stageDir     string
-	prefix       string
-	extension    string
-	compress     bool
-	bufferSize   int
-	bytesWritten int64 // to see if file is empty at Close (during finalize)
-	finalizer    Finalizer
+	writing       bool
+	deleteOnClose bool
+	fp            *os.File      // Underlying FP. Needed to close and flush after we are done.
+	zw            *lz4.Writer   // Used only if compression is enabled.
+	zr            *lz4.Reader   // Used only if compression is enabled.
+	bw            *bufio.Writer // If set, all writes are buffered
+	br            *bufio.Reader // If set, all reads are buffered
+	fqfn          string        // name, for debugging/printing only
+	stageDir      string
+	prefix        string
+	extension     string
+	compress      bool
+	bufferSize    int
+	bytesWritten  int64 // to see if file is empty at Close (during finalize)
+	Finalizer     FinalizerFunc
 }
 
 func NewBasicArchive(stageDir, prefix, extension string,
-	compress bool, bufferSize int, finalizer Finalizer) *BasicArchive {
+	compress bool, bufferSize int) *BasicArchive {
 
 	extension = strings.TrimLeft(extension, ".") // allow extension to be specified as xyz or .xyz
 
 	return &BasicArchive{
-		writing:    true,
-		stageDir:   stageDir,
-		prefix:     prefix,
-		extension:  extension,
-		compress:   compress,
-		bufferSize: bufferSize,
-		finalizer:  finalizer,
+		writing:       true,
+		deleteOnClose: false,
+		stageDir:      stageDir,
+		prefix:        prefix,
+		extension:     extension,
+		compress:      compress,
+		bufferSize:    bufferSize,
+		//Finalizer:  finalizer,
 	}
 }
 
 func (rf *BasicArchive) Name() string {
 	return rf.fqfn
+}
+
+func (rf *BasicArchive) TrueContentLength() int64 {
+	return rf.bytesWritten
 }
 
 // Write satisfies io.Writer interface - main logic is the transparent
@@ -172,23 +178,16 @@ func (rf *BasicArchive) Close() (err error) {
 	rf.bw = nil
 	rf.br = nil
 
-	filepath := rf.Name()
-	if rf.bytesWritten == 0 {
-		// log.Printf("Deleting empty file %s", filepath)
-		err = os.Remove(filepath)
+	filePath := rf.Name()
+	if (rf.writing && rf.bytesWritten == 0) || (!rf.writing && rf.deleteOnClose) {
+		log.Printf("Deleting file %s (bytesWritten=%d, deleteOnClose=%t)",
+			filePath, rf.bytesWritten, rf.deleteOnClose)
+		err = os.Remove(filePath)
 		return err
 	}
 
-	fi, err := os.Stat(filepath)
-	if err != nil {
-		err = errors.Wrapf(err, "unable to stat file %s", filepath)
-		return err
-	}
-
-	finalFileSize := fi.Size()
-
-	if rf.writing && rf.finalizer != nil {
-		return rf.finalizer(filepath, finalFileSize)
+	if rf.writing && rf.Finalizer != nil {
+		return rf.Finalizer()
 	}
 
 	return err
@@ -228,7 +227,12 @@ func (rf *BasicArchive) Rotate() (err error) {
 		extension += ".lz4"
 	}
 
-	rf.fp, err = ioutil.TempFile("", fmt.Sprintf("%s_%s_*%s.tmp", rf.prefix, ts, extension))
+	err = os.MkdirAll(rf.stageDir, 0755)
+	if err != nil {
+		return errors.Wrap(err, "Unable to create staging directory for writing")
+	}
+
+	rf.fp, err = ioutil.TempFile(rf.stageDir, fmt.Sprintf("%s_%s_*%s.tmp", rf.prefix, ts, extension))
 	if err != nil {
 		return errors.Wrap(err, "Unable to open temporary file for writing")
 	}
@@ -252,10 +256,11 @@ func (rf *BasicArchive) Rotate() (err error) {
 }
 
 // OpenArchive opens an archive file for reading. `*BasicArchive` returned is an io.Reader
-func OpenArchive(fileName string, bufferSize int) (rf *BasicArchive, err error) {
+func OpenArchive(fileName string, bufferSize int, deleteOnClose bool) (rf *BasicArchive, err error) {
 
-	rf = &BasicArchive{writing: false}
+	rf = &BasicArchive{writing: false, deleteOnClose: deleteOnClose}
 
+	rf.fqfn = fileName
 	rf.fp, err = os.Open(fileName)
 	if err != nil {
 		log.Printf("Unable to open file %s: +%v", fileName, err)
@@ -284,9 +289,14 @@ func UploadProgressPrinter(statChan chan int64, fileName string, fileSize int64,
 		if bytesTransferred > total {
 			diff := bytesTransferred - lastPrinted
 			if diff > 1_000_000 {
-				log.Printf("%s: %d/%d (%2.02f %%)",
-					fileName, bytesTransferred, fileSize,
-					float64(bytesTransferred*100.0)/float64(fileSize))
+				if fileSize != 0 {
+					log.Printf("%s: %d/%d (%2.02f %%)",
+						fileName, bytesTransferred, fileSize,
+						float64(bytesTransferred*100.0)/float64(fileSize))
+				} else {
+					log.Printf("%s: %d",
+						fileName, bytesTransferred)
+				}
 				lastPrinted = bytesTransferred
 			}
 		} else {

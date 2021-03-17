@@ -35,8 +35,8 @@ type FileArchive struct {
 func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int) (rf *FileArchive, err error) {
 
 	rf = &FileArchive{BasicArchive: *common.NewBasicArchive(outDir,
-		prefix, extension, compress, bufferSize,
-		rf.finalizeArchive)}
+		prefix, extension, compress, bufferSize)}
+	rf.Finalizer = rf.finalizeArchive
 
 	err = rf.Rotate()
 	if err != nil {
@@ -48,7 +48,7 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 // OpenArchive opens an archive file for reading. `*FileArchive` returned is an io.Reader
 func OpenArchive(fileName string, bufferSize int) (rf *FileArchive, err error) {
 
-	rfi, err := common.OpenArchive(fileName, bufferSize)
+	rfi, err := common.OpenArchive(fileName, bufferSize, false)
 	if err != nil {
 		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
@@ -58,24 +58,24 @@ func OpenArchive(fileName string, bufferSize int) (rf *FileArchive, err error) {
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will rename the temporary file to its final name. File should be considered
 // incomplete if it ends with a .tmp extension.
-func (rf *FileArchive) finalizeArchive(filepath string, fileSize int64) (err error) {
+func (rf *FileArchive) finalizeArchive() (err error) {
 
-	finalPath := filepath
-	if strings.HasSuffix(filepath, ".tmp") {
-		finalPath = finalPath[:(len(".tmp"))]
-		err = os.Rename(filepath, finalPath)
-		if err != nil {
-			err = errors.Wrapf(err, "unable to rename archive file: %s", filepath)
-			return err
-		}
-	}
-	log.Printf("Renamed %s to %s", filepath, finalPath)
-
-	fi, err := os.Stat(filepath)
+	filePath := rf.Name()
+	fi, err := os.Stat(filePath)
 	if err != nil {
-		err = errors.Wrapf(err, "unable to stat file %s", filepath)
+		err = errors.Wrapf(err, "unable to stat file %s", filePath)
 		return err
 	}
+
+	finalPath := strings.TrimSuffix(filePath, ".tmp")
+	err = os.Rename(filePath, finalPath)
+	if err != nil {
+		err = errors.Wrapf(err, "unable to rename archive file: %s", filePath)
+		return err
+	}
+	log.Printf("Renamed %s to %s (Content: %d bytes, Archive: %d bytes)",
+		filePath, finalPath,
+		rf.TrueContentLength(), fi.Size())
 
 	fileMode := fi.Mode()
 	// only touch the Group and Other sections

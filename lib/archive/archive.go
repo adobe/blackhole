@@ -66,6 +66,22 @@ func OpenArchive(fileName string, bufferSize int) (rf Archive, err error) {
 			return nil, errors.Wrapf(err, "Unable to create local file")
 		}
 		return rf, nil
+	} else {
+		proto := strings.ToLower(fileName[:strings.Index(fileName, "://")])
+		switch proto {
+		case "az":
+			rf, err = az.OpenArchive(fileName, bufferSize)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Unable to create local file")
+			}
+			return rf, nil
+		case "s3":
+			rf, err = s3f.OpenArchive(fileName, bufferSize)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Unable to create local file")
+			}
+			return rf, nil
+		}
 	}
 	return nil, errors.Errorf("Unsupported URL type")
 }
