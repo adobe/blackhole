@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -14,12 +14,12 @@ package main
 
 import (
 	"fmt"
+	"github.com/adobe/blackhole/lib/archive"
 	"log"
 	"sync/atomic"
 	"time"
 
-	"github.com/adobe/blackhole/lib/archive/file"
-	"github.com/adobe/blackhole/lib/archive/request"
+	"github.com/adobe/blackhole/lib/request"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
 )
@@ -29,9 +29,10 @@ import (
 // when dummy = true, the worker just counts requests
 func requestConsumer(grID int, rc *runtimeContext, dummy bool) (err error) {
 
-	var rf *file.Archive
+	var rf archive.Archive
 	if !dummy {
-		rf, err = file.NewArchiveFile(rc.outDir, rc.compress, rc.bufferSize)
+		rf, err = archive.NewArchive(rc.outDir,
+			"requests", ".fbf", rc.compress, rc.bufferSize)
 		if err != nil {
 			return errors.Wrapf(err, "Unable to create archive file for worker %d", grID)
 		}
@@ -61,7 +62,7 @@ Loop:
 
 		case <-tickerSave.C:
 			if !dummy && numRequests > numRequestsAtLastSave { // there is something to rotate
-				err = rf.RotateArchiveFile()
+				err = rf.Rotate()
 				numRequestsAtLastSave = numRequests
 			}
 
@@ -71,9 +72,9 @@ Loop:
 			}
 			numRequests++
 			if !dummy {
-				err = rf.SaveRequest(req, false)
+				err = req.SaveRequest(rf, false)
 				if err != nil {
-					msg := fmt.Sprintf("FATAL: Writing to file %s failed.", rf.Name)
+					msg := fmt.Sprintf("FATAL: writing to file %s failed.", rf.Name())
 					log.Printf("%s: Error: %+v", msg, err)
 					return errors.Wrap(err, msg)
 				}
