@@ -227,9 +227,11 @@ func (rf *BasicArchive) Rotate() (err error) {
 		extension += ".lz4"
 	}
 
-	err = os.MkdirAll(rf.stageDir, 0755)
-	if err != nil {
-		return errors.Wrap(err, "Unable to create staging directory for writing")
+	if rf.stageDir != "" {
+		err = os.MkdirAll(rf.stageDir, 0755)
+		if err != nil {
+			return errors.Wrap(err, "Unable to create staging directory for writing")
+		}
 	}
 
 	rf.fp, err = ioutil.TempFile(rf.stageDir, fmt.Sprintf("%s_%s_*%s.tmp", rf.prefix, ts, extension))
