@@ -4,12 +4,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"time"
 
 	"github.com/adobe/blackhole/lib/archive"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
+
+var gLogger, _ = zap.NewDevelopment()
 
 // SaveRequest saves the data held by MarshalledRequest to the archive file.
 // MarshalledRequest typically holds a flatbuffer builder that is already
@@ -28,14 +30,14 @@ func (req *MarshalledRequest) SaveRequest(rf archive.Archive, flushNow bool) (er
 	n, err := rf.Write(lbuf)
 	if err != nil {
 		msg := fmt.Sprintf("FATAL: Wrote only %d bytes, %d expected.", n, UINT64LEN)
-		log.Printf("%s: Error: %+v", msg, err)
+		gLogger.Error(msg, zap.Error(err))
 		return errors.Wrap(err, msg)
 	}
 
 	n, err = rf.Write(fbBytes)
 	if err != nil {
 		msg := fmt.Sprintf("FATAL: Wrote only %d bytes, %d expected.", n, fbLen)
-		log.Printf("%s: Error: %+v", msg, err)
+		gLogger.Error(msg, zap.Error(err))
 		return errors.Wrap(err, msg)
 	}
 
@@ -83,7 +85,7 @@ func GetNextRequest(rf archive.Archive, waitForData bool) (umr *UnmarshalledRequ
 	if err != nil {
 		umr.Release()
 		msg := fmt.Sprintf("FATAL: Read only %d bytes, %d expected.", n, fbLen)
-		log.Printf("%s: Error: %+v", msg, err)
+		gLogger.Error(msg, zap.Error(err))
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF // at this stage simple end-of-file is not allowed
 		}
@@ -117,14 +119,13 @@ func ReadFull(r io.Reader, buf []byte, waitForData bool) (bytesRead int, err err
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				if waitForData && tries < 600 {
 					tries++
-					// log.Printf("Consumer: No data to read: sleeping one second (tries = %d)", tries)
 					time.Sleep(time.Second)
 					continue
 				}
 				return bytesRead, err
 			}
 			msg := fmt.Sprintf("FATAL: Read only %d bytes, %d expected.", n, len(buf))
-			log.Printf("%s: Error: %+v", msg, err)
+			gLogger.Error(msg, zap.Error(err))
 			return bytesRead, errors.Wrap(err, msg)
 		}
 		tries = 0

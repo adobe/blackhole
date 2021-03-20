@@ -16,11 +16,16 @@ governing permissions and limitations under the License.
 package file
 
 import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+
 	"github.com/adobe/blackhole/lib/archive/common"
 	"github.com/pkg/errors"
-	"log"
-	"os"
-	"strings"
+	"go.uber.org/zap"
 )
 
 // FileArchive embeds a BasicArchive with some additional attributes
@@ -32,10 +37,15 @@ type FileArchive struct {
 // `rf.Close()` on the resulting handle to close out the file.
 // File is atomically renamed to the final name only after everything
 // is flushed to disk and file is closed. `*FileArchive` returned is an io.Writer
-func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int) (rf *FileArchive, err error) {
+func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicArchive) error) (rf *FileArchive, err error) {
 
-	rf = &FileArchive{BasicArchive: *common.NewBasicArchive(outDir,
-		prefix, extension, compress, bufferSize)}
+	ba, err := common.NewBasicArchive(
+		outDir, prefix, extension, options...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Unable to initialize basic archive")
+	}
+
+	rf = &FileArchive{BasicArchive: *ba}
 	rf.Finalizer = rf.finalizeArchive
 
 	err = rf.Rotate()
@@ -73,10 +83,11 @@ func (rf *FileArchive) finalizeArchive() (err error) {
 		err = errors.Wrapf(err, "unable to rename archive file: %s", filePath)
 		return err
 	}
-	log.Printf("Renamed %s to %s (Content: %d bytes, Archive: %d bytes)",
-		filePath, finalPath,
-		rf.TrueContentLength(), fi.Size())
-
+	rf.Logger.Info("Renamed",
+		zap.String("old", filePath),
+		zap.String("new", finalPath),
+		zap.Int64("content-bytes", rf.TrueContentLength()),
+		zap.Int64("compressed-bytes", fi.Size()))
 	fileMode := fi.Mode()
 	// only touch the Group and Other sections
 	fileMode |= 044
@@ -89,4 +100,49 @@ func (rf *FileArchive) finalizeArchive() (err error) {
 
 	rf.Reset()
 	return nil
+}
+
+func List(dir string) (files []string, err error) {
+
+	err = filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			fmt.Printf("ERROR: %s: %+v\n", path, err)
+			return nil
+		}
+
+		relPath, err := filepath.Rel(dir, path)
+		if err != nil {
+			return nil // Skipping weird directories
+		}
+		if !info.IsDir() {
+			files = append(files, relPath)
+		}
+
+		/* this is better code to include sub-directories
+		 * but they are a bit more work to support
+		 * for now, we don't need to list or remove sub-directories
+
+		// fmt.Printf("path = >%s<, relpath=>%s<\n", path, relPath)
+		if relPath != "" && relPath != "." {
+			// add all subdirectories except the root directory
+			files = append(files, relPath)
+		}
+		*/
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Wrapf(err, "list directory failed for: %s", dir)
+	}
+	return files, err
+}
+
+func Delete(dir string, files []string) (err error) {
+	for _, file := range files {
+		err = os.Remove(path.Join(dir, file))
+		if err != nil {
+			fmt.Printf("ERROR: Can't delete %s: %+v", file, err)
+			return nil
+		}
+	}
+	return err
 }

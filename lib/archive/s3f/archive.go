@@ -18,18 +18,19 @@ package s3f
 import (
 	"context"
 	"fmt"
-	"github.com/adobe/blackhole/lib/archive/common"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/pkg/errors"
 	"io/ioutil"
-	"log"
 	"os"
 	"path"
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/adobe/blackhole/lib/archive/common"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 var gS3Session struct {
@@ -44,7 +45,7 @@ var s3UrlRegex = regexp.MustCompile("([^/:]+)://([^/]+)/(.*?)$")
 type S3Archive struct {
 	common.BasicArchive
 	bucketName string
-	s3SubDir   string
+	contSubDir string
 }
 
 func s3Init() (err error) {
@@ -66,7 +67,7 @@ func s3Init() (err error) {
 // `rf.Close()` on the resulting handle to close out the file.
 // File is atomically renamed to the final name only after everything
 // is flushed to disk and file is closed. `*S3Archive` returned is an io.Writer
-func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int) (rf *S3Archive, err error) {
+func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicArchive) error) (rf *S3Archive, err error) {
 
 	err = s3Init()
 	if err != nil {
@@ -79,10 +80,15 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 		return nil, errors.Wrap(err, "Unable to parse s3 url format")
 	}
 	bucketName, s3SubDir := parts[2], parts[3]
-	rf = &S3Archive{BasicArchive: *common.NewBasicArchive("",
-		prefix, extension, compress, bufferSize),
+	ba, err := common.NewBasicArchive(
+		"", prefix, extension, options...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Unable to initialize basic archive")
+	}
+
+	rf = &S3Archive{BasicArchive: *ba,
 		bucketName: bucketName,
-		s3SubDir:   s3SubDir}
+		contSubDir: s3SubDir}
 	rf.Finalizer = rf.finalizeArchive
 
 	err = rf.Rotate()
@@ -112,7 +118,10 @@ func OpenArchive(fileName string, bufferSize int) (rf *S3Archive, err error) {
 		return nil, errors.Wrapf(err, "unable to create temp file")
 	}
 
-	log.Printf("AZ:%s => L:%s [BEGIN]", filePath, fp.Name())
+	rf.Logger.Debug("S3 Download [BEGIN]",
+		zap.String("local", filePath),
+		zap.String("remote", fp.Name()))
+
 	_, err = gS3Session.S3Downloader.Download(context.Background(), fp, &s3.GetObjectInput{
 		Bucket: &bucketName,
 		Key:    &filePath,
@@ -120,7 +129,10 @@ func OpenArchive(fileName string, bufferSize int) (rf *S3Archive, err error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to download archive file: %s", filePath)
 	}
-	log.Printf("AZ:%s => L:%s [END]", filePath, fp.Name())
+
+	rf.Logger.Debug("S3 Download [END]",
+		zap.String("local", filePath),
+		zap.String("remote", fp.Name()))
 
 	rfi, err := common.OpenArchive(fp.Name(), bufferSize, true)
 	if err != nil {
@@ -129,12 +141,20 @@ func OpenArchive(fileName string, bufferSize int) (rf *S3Archive, err error) {
 	return &S3Archive{BasicArchive: *rfi}, nil
 }
 
+func List(dir string) (files []string, err error) {
+	panic("Not implemented")
+}
+
+func Delete(dir string, files []string) (err error) {
+	panic("Not implemented")
+}
+
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will upload to S3.
 func (rf *S3Archive) finalizeArchive() (err error) {
 
 	filePath := rf.Name()
-	finalPath := fmt.Sprintf("%s/%s", rf.s3SubDir, path.Base(filePath))
+	finalPath := path.Join(rf.contSubDir, path.Base(filePath))
 	finalPath = strings.TrimSuffix(finalPath, ".tmp")
 
 	finalFP, err := os.Open(filePath)
@@ -143,7 +163,9 @@ func (rf *S3Archive) finalizeArchive() (err error) {
 	}
 	defer finalFP.Close()
 
-	log.Printf("L:%s => AZ:%s [BEGIN]", filePath, finalPath)
+	rf.Logger.Debug("S3 Upload [BEGIN]",
+		zap.String("local", filePath),
+		zap.String("remote", finalPath))
 
 	/* Progress tracking is not possible with S3manager API
 	 * suggested work around is hacky
@@ -172,7 +194,10 @@ func (rf *S3Archive) finalizeArchive() (err error) {
 	if err != nil {
 		return errors.Wrapf(err, "unable to reopen archive file: %s", finalPath)
 	}
-	log.Printf("L:%s => AZ:%s [END]", filePath, finalPath)
+
+	rf.Logger.Info("S3 Upload [END]",
+		zap.String("local", filePath),
+		zap.String("remote", finalPath))
 
 	err = os.Remove(filePath)
 	if err != nil {

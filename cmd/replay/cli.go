@@ -57,7 +57,7 @@ type cmdArgs struct {
 	testIntegrity    bool
 }
 
-func processCmdline() {
+func processCmdline() (args cmdArgs, err error) {
 
 	flag.BoolVarP(&args.cpuProfile, "cpu-profile", "", false,
 		"(for debug only) CPU profile this run")
@@ -108,4 +108,5 @@ func processCmdline() {
 		log.Fatalf("Please supply a -r or -i option when enabling this flag. Otherwise we will flood filesystem")
 	}
 
+	return args, nil
 }

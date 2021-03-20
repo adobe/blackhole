@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"path"
 	"strings"
@@ -30,6 +29,7 @@ import (
 
 	"github.com/pierrec/lz4/v4"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // FinalizerFunc is a callback that will be called on Close.
@@ -41,6 +41,7 @@ type FinalizerFunc func() (err error)
 // BasicArchive encapsulates some common functionality between
 // S3Archive, FileArchive, and AZArchive
 type BasicArchive struct {
+	Logger        *zap.Logger
 	writing       bool
 	deleteOnClose bool
 	fp            *os.File      // Underlying FP. Needed to close and flush after we are done.
@@ -59,19 +60,47 @@ type BasicArchive struct {
 }
 
 func NewBasicArchive(stageDir, prefix, extension string,
-	compress bool, bufferSize int) *BasicArchive {
+	options ...func(*BasicArchive) error) (ba *BasicArchive, err error) {
 
 	extension = strings.TrimLeft(extension, ".") // allow extension to be specified as xyz or .xyz
 
-	return &BasicArchive{
+	ba = &BasicArchive{
 		writing:       true,
 		deleteOnClose: false,
 		stageDir:      stageDir,
 		prefix:        prefix,
 		extension:     extension,
-		compress:      compress,
-		bufferSize:    bufferSize,
-		//Finalizer:  finalizer,
+	}
+	for _, option := range options {
+		option(ba)
+	}
+	if ba.Logger == nil { // still unset, have a default
+		ba.Logger, err = zap.NewProduction()
+		if err != nil {
+			return nil, errors.Wrapf(err, "Unable to initialize zap logger")
+		}
+	}
+	return ba, nil
+}
+
+func Compress(c bool) func(*BasicArchive) error {
+	return func(b *BasicArchive) error {
+		b.compress = c
+		return nil
+	}
+}
+
+func BufferSize(bufferSize int) func(*BasicArchive) error {
+	return func(b *BasicArchive) error {
+		b.bufferSize = bufferSize
+		return nil
+	}
+}
+
+func Logger(logger *zap.Logger) func(*BasicArchive) error {
+	return func(b *BasicArchive) error {
+		b.Logger = logger
+		return nil
 	}
 }
 
@@ -136,7 +165,7 @@ func (rf *BasicArchive) Read(p []byte) (n int, err error) {
 func (rf *BasicArchive) Flush() (err error) {
 
 	if rf.zw == nil {
-		log.Printf("Flushing %s to disk", rf.Name())
+		rf.Logger.Debug("Flushing", zap.String("file", rf.Name()))
 		if err == nil && rf.bw != nil {
 			err = rf.bw.Flush()
 		}
@@ -144,7 +173,7 @@ func (rf *BasicArchive) Flush() (err error) {
 			err = rf.fp.Sync()
 		}
 	} else {
-		log.Println("WARNING: Flush() supported only for uncompressed streams")
+		rf.Logger.Warn("Flush() supported only for uncompressed streams")
 	}
 
 	return err
@@ -180,8 +209,10 @@ func (rf *BasicArchive) Close() (err error) {
 
 	filePath := rf.Name()
 	if (rf.writing && rf.bytesWritten == 0) || (!rf.writing && rf.deleteOnClose) {
-		log.Printf("Deleting file %s (bytesWritten=%d, deleteOnClose=%t)",
-			filePath, rf.bytesWritten, rf.deleteOnClose)
+		rf.Logger.Debug("Deleting file",
+			zap.String("file", filePath),
+			zap.Int64("bytesWritten", rf.bytesWritten),
+			zap.Bool("deleteOnClose", rf.deleteOnClose))
 		err = os.Remove(filePath)
 		return err
 	}
@@ -243,17 +274,15 @@ func (rf *BasicArchive) Rotate() (err error) {
 	var stream io.Writer
 	stream = rf.fp
 	if rf.bufferSize > 0 {
-		log.Printf("Buffer: %d", rf.bufferSize)
 		rf.bw = bufio.NewWriterSize(rf.fp, rf.bufferSize)
 		stream = rf.bw
 	}
 
 	if rf.compress {
-		log.Printf("Compression is ON")
 		rf.zw = lz4.NewWriter(stream)
 	}
 
-	log.Printf("Created file %v", rf.fqfn)
+	rf.Logger.Debug("Created", zap.String("file", rf.fqfn), zap.Int("bufferSize", rf.bufferSize), zap.Bool("compress", rf.compress))
 	return err
 }
 
@@ -265,8 +294,8 @@ func OpenArchive(fileName string, bufferSize int, deleteOnClose bool) (rf *Basic
 	rf.fqfn = fileName
 	rf.fp, err = os.Open(fileName)
 	if err != nil {
-		log.Printf("Unable to open file %s: +%v", fileName, err)
-		return nil, errors.Wrapf(err, "Unable to open file %s", fileName)
+		rf.Logger.Error("os.Open failed", zap.String("file", fileName), zap.Error(err))
+		return nil, errors.Wrapf(err, "Error opening file %s", fileName)
 	}
 	var stream io.Reader
 	stream = rf.fp
@@ -280,8 +309,8 @@ func OpenArchive(fileName string, bufferSize int, deleteOnClose bool) (rf *Basic
 	return rf, nil
 }
 
-// UploadProgressPrinter is a helper function. Currently only usable with Azure blob upload
-func UploadProgressPrinter(statChan chan int64, fileName string, fileSize int64, wg *sync.WaitGroup) {
+// ProgressPrinter is a helper function. Currently only usable with Azure blob upload
+func (rf *BasicArchive) ProgressPrinter(statChan chan int64, fileName string, fileSize int64, wg *sync.WaitGroup) {
 
 	defer wg.Done()
 	total := int64(0)
@@ -290,21 +319,39 @@ func UploadProgressPrinter(statChan chan int64, fileName string, fileSize int64,
 	for bytesTransferred := range statChan {
 		if bytesTransferred > total {
 			diff := bytesTransferred - lastPrinted
-			if diff > 1_000_000 {
+			if diff > 100_000_000 {
 				if fileSize != 0 {
-					log.Printf("%s: %d/%d (%2.02f %%)",
-						fileName, bytesTransferred, fileSize,
-						float64(bytesTransferred*100.0)/float64(fileSize))
+					rf.Logger.Debug("Upload Status",
+						zap.String("file", fileName),
+						zap.Int64("bytesTransferred", bytesTransferred),
+						zap.Int64("fileSize", fileSize),
+						zap.Float64("percentDone", float64(bytesTransferred*100.0)/float64(fileSize)))
 				} else {
-					log.Printf("%s: %d",
-						fileName, bytesTransferred)
+					rf.Logger.Debug("Upload Status",
+						zap.String("file", fileName),
+						zap.Int64("bytesTransferred", bytesTransferred))
+
 				}
 				lastPrinted = bytesTransferred
 			}
 		} else {
-			log.Printf("WARNING: Previous attempt failed for %s. Bytes transferred went from %d to %d",
-				fileName, total, bytesTransferred)
+			rf.Logger.Warn("Previous attempt failed",
+				zap.String("file", fileName),
+				zap.Int64("Previous bytesTransferred", total),
+				zap.Int64("New bytesTransferred", bytesTransferred))
 		}
 		total = bytesTransferred
 	}
+	if fileSize != 0 {
+		rf.Logger.Debug("Upload Status [FINAL]",
+			zap.String("file", fileName),
+			zap.Int64("bytesTransferred", total),
+			zap.Int64("fileSize", fileSize),
+			zap.Float64("percentDone", float64(total*100.0)/float64(fileSize)))
+	} else {
+		rf.Logger.Debug("Upload Status [FINAL]",
+			zap.String("file", fileName),
+			zap.Int64("bytesTransferred", total))
+	}
+
 }

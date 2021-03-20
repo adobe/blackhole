@@ -22,6 +22,8 @@ import (
 	"github.com/adobe/blackhole/lib/request"
 	dprofile "github.com/pkg/profile"
 	"github.com/valyala/fasthttp"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 type runtimeContext struct {
@@ -34,6 +36,7 @@ type runtimeContext struct {
 	bufferSize    int
 	servers       []*fasthttp.Server
 	activeProfile interface{ Stop() }
+	logger        *zap.Logger
 	// Because of the need to Flush and Close the profiler output
 	// from the interrupt handler below, this has to managed as a module/global
 }
@@ -43,7 +46,7 @@ type runtimeContext struct {
 // requestConsumer() is the archiver
 var recordReqChan chan *request.MarshalledRequest
 
-func initRunTimeContext(rc *runtimeContext, args cmdArgs) {
+func initRunTimeContext(rc *runtimeContext, args cmdArgs) (err error) {
 	for i := 0; i < args.numThreads; i++ {
 		rc.exitChans = append(rc.exitChans, make(chan bool, 1)) // Docs recommend a buffer of 1
 	}
@@ -53,6 +56,24 @@ func initRunTimeContext(rc *runtimeContext, args cmdArgs) {
 	rc.compress = args.compress
 	rc.activeProfile = nil
 	rc.counters = make([]int64, args.numThreads)
+
+	zapLevel := zapcore.InfoLevel
+	if args.verbose {
+		zapLevel = zapcore.DebugLevel
+	}
+	zapConfig := zap.Config{
+		Level:             zap.NewAtomicLevelAt(zapLevel),
+		DisableCaller:     true,
+		DisableStacktrace: true,
+		Development:       args.verbose,
+		Encoding:          "console",
+		EncoderConfig:     zap.NewDevelopmentEncoderConfig(),
+		OutputPaths:       []string{"stderr"},
+		ErrorOutputPaths:  []string{"stderr"},
+	}
+	rc.logger, err = zapConfig.Build()
+	// err is returned to caller
+	return err
 }
 
 func main() {
@@ -64,12 +85,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("%+v", err)
 	}
-	initRunTimeContext(rc, args)
-	log.Printf("Built: %s", buildTS)
-
-	err = loadConfig()
+	err = initRunTimeContext(rc, args)
 	if err != nil {
 		log.Fatalf("%+v", err)
+	}
+	rc.logger.Debug("Built", zap.String("TS", buildTS))
+
+	err = loadConfig(rc)
+	if err != nil {
+		rc.logger.Fatal("FATAL", zap.Error(err))
 	}
 
 	if args.cpuProfile {
@@ -86,13 +110,13 @@ func main() {
 		defer rc.activeProfile.Stop()
 	}
 
-	cfg, err := loadTLSConfig()
+	cfg, err := loadTLSConfig(rc)
 	if err != nil {
-		log.Fatalf("TLS setup failed:%+v", err)
+		rc.logger.Fatal("TLS setup failed", zap.Error(err))
 	}
 
 	if args.skip_stats && args.outputDir != "" {
-		log.Printf("Skipping stats is useful only if you also avoid saving requests")
+		rc.logger.Warn("Skipping stats is useful only if you also avoid saving requests")
 		args.skip_stats = false
 	}
 
@@ -102,11 +126,11 @@ func main() {
 	}
 	lns, err := createListeners(cfg)
 	if err != nil {
-		log.Fatalf("Unable to start listeners: %+v", err)
+		rc.logger.Fatal("Unable to start listeners", zap.Error(err))
 	}
 	startServers(rc, lns)
 
-	log.Printf("main(): Waiting for all reader threads to exit")
+	rc.logger.Info("main(): Waiting for all reader threads to exit")
 	rc.wgConsumers.Wait()
 }
 
@@ -125,10 +149,10 @@ func statsPrinter(rc *runtimeContext) {
 		for i := range rc.counters {
 			totalCount += atomic.LoadInt64(&rc.counters[i])
 		}
-		log.Printf("Aggregate: %d requests received in last (%.2f seconds). Total %d so far",
-			totalCount-priorCount,
-			time.Since(priorStatTime).Seconds(),
-			totalCount)
+		rc.logger.Debug("Aggregate",
+			zap.Int64("total", totalCount),
+			zap.Int64("incremental", totalCount-priorCount),
+			zap.Duration("duration", time.Since(priorStatTime)))
 		priorCount = totalCount
 		priorStatTime = time.Now()
 	}
@@ -144,7 +168,7 @@ func setupWorkflowHandlers(rc *runtimeContext, args cmdArgs) {
 		go func(j int) {
 			err := requestConsumer(j, rc, args.outputDir == "")
 			if err != nil {
-				log.Fatalf("%+v", err)
+				rc.logger.Fatal("Handler thread failed", zap.Error(err))
 			}
 		}(i)
 	}

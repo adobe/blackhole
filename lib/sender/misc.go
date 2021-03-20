@@ -15,12 +15,12 @@ package sender
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"strings"
 
 	"github.com/adobe/blackhole/lib/fbr"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // saveRequest prints the request, in human readable / plain text to a file OR stdout
@@ -75,7 +75,9 @@ func (wrk *Worker) saveRequest(req *fbr.Request, print bool) (err error) {
 		fp.Close()
 		fp = nil
 	}
-	log.Printf("Request saved in files %s and %s", headerName, bodyFileName)
+	wrk.logger.Info("Request saved",
+		zap.String("body-file", bodyFileName),
+		zap.String("header-file", headerName))
 
 	return err
 }

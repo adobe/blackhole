@@ -13,12 +13,12 @@ governing permissions and limitations under the License.
 package main
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 func setupCleanupHandlers(rc *runtimeContext, args cmdArgs) {
@@ -37,10 +37,10 @@ func setupCleanupHandlers(rc *runtimeContext, args cmdArgs) {
 func waitForINTSignal(rc *runtimeContext, args cmdArgs) {
 
 	s := <-rc.interruptChan
-	log.Printf("Received signal: %v", s)
+	rc.logger.Info("Received", zap.String("signal", s.String()))
 	err := shutDown(rc)
 	if err != nil {
-		log.Fatalf("%+v", err)
+		rc.logger.Fatal("FATAL", zap.Error(err))
 	}
 	os.Exit(1)
 }
@@ -75,8 +75,8 @@ func shutDown(rc *runtimeContext) (err error) {
 	// but that was a bad idea.
 	// **********************************************************
 
-	log.Printf("shutdown: Waiting for all reader threads to exit")
+	rc.logger.Info("shutdown: Waiting for all reader threads to exit")
 	rc.wgConsumers.Wait()
-	log.Printf("All reader threads finished")
+	rc.logger.Info("All reader threads finished")
 	return nil
 }

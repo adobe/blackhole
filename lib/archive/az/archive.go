@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/url"
 	"os"
 	"path"
@@ -30,6 +29,7 @@ import (
 
 	"github.com/adobe/blackhole/lib/archive/common"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 
 	// "github.com/gogo/protobuf/proto"
 	"github.com/Azure/azure-pipeline-go/pipeline"
@@ -78,7 +78,7 @@ func azInit() (err error) {
 // `rf.Close()` on the resulting handle to close out the file.
 // File is atomically renamed to the final name only after everything
 // is flushed to disk and file is closed. `*AZArchive` returned is an io.Writer
-func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int) (rf *AZArchive, err error) {
+func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicArchive) error) (rf *AZArchive, err error) {
 
 	err = azInit()
 	if err != nil {
@@ -88,13 +88,17 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 	// https://play.golang.org/p/vZ4NZzi6vrK
 	parts := azUrlRegex.FindStringSubmatch(outDir)
 	if len(parts) != 4 { // must be exactly 4 parts
-		return nil, errors.Wrap(err, "Unable to parse azure blob url format")
+		return nil, errors.New("Unable to parse azure blob url format")
 	}
 	containerName, directory := parts[2], parts[3]
 
-	rf = &AZArchive{BasicArchive: *common.NewBasicArchive(
+	ba, err := common.NewBasicArchive(
 		"",
-		prefix, extension, compress, bufferSize),
+		prefix, extension, options...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Unable to initialize basic archive")
+	}
+	rf = &AZArchive{BasicArchive: *ba,
 		containerName: containerName,
 		contSubDir:    directory}
 	rf.Finalizer = rf.finalizeArchive
@@ -106,26 +110,37 @@ func NewArchive(outDir, prefix, extension string, compress bool, bufferSize int)
 	return rf, err
 }
 
-// OpenArchive opens an archive file for reading. `*AZArchive` returned is an io.Reader
-func OpenArchive(fileName string, bufferSize int) (rf *AZArchive, err error) {
+func getContainer(fullPath string) (cu azblob.ContainerURL, rest string, err error) {
 
 	err = azInit()
 	if err != nil {
-		return nil, errors.Wrap(err, "Unable to initialize azure connection")
+		return cu, "", errors.Wrap(err, "Unable to initialize azure connection")
 	}
 
-	parts := azUrlRegex.FindStringSubmatch(fileName)
+	parts := azUrlRegex.FindStringSubmatch(fullPath)
 	if len(parts) != 4 { // must be exactly 4 parts
-		return nil, errors.Wrap(err, "Unable to parse azure blob url format")
+		return cu, "", errors.Wrap(err, "Unable to parse azure blob url format")
 	}
 
-	containerName, filePath := parts[2], parts[3]
+	containerName, rest := parts[2], parts[3]
 
 	// From the Azure portal, get your storage account blob service URL endpoint.
 	URL, _ := url.Parse(
 		fmt.Sprintf("https://%s.blob.core.windows.net/%s", gAZSession.accountName, containerName))
 
-	azContainerURL := azblob.NewContainerURL(*URL, gAZSession.azPipeline)
+	cu = azblob.NewContainerURL(*URL, gAZSession.azPipeline)
+	return cu, rest, err
+
+}
+
+// OpenArchive opens an archive file for reading. `*AZArchive` returned is an io.Reader
+func OpenArchive(fileName string, bufferSize int) (rf *AZArchive, err error) {
+
+	azContainerURL, filePath, err := getContainer(fileName)
+	if err != nil {
+		return nil, errors.Wrap(err, "Unable to initialize azure connection")
+	}
+
 	blobURL := azContainerURL.NewBlobURL(filePath)
 
 	fp, err := ioutil.TempFile("", fmt.Sprintf("tmp_*_%s", path.Base(filePath)))
@@ -138,10 +153,15 @@ func OpenArchive(fileName string, bufferSize int) (rf *AZArchive, err error) {
 	}
 	fileSize := props.ContentLength()
 
+	rf.Logger.Debug("Azure Download [BEGIN]",
+		zap.String("local", filePath),
+		zap.Int64("size", fileSize),
+		zap.String("remote", fp.Name()))
+
 	var statChan = make(chan int64)
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go common.UploadProgressPrinter(statChan, filePath, fileSize, &wg)
+	go rf.ProgressPrinter(statChan, filePath, fileSize, &wg)
 
 	err = azblob.DownloadBlobToFile(context.Background(), blobURL, 0, 0, fp, azblob.DownloadFromBlobOptions{
 		Progress: func(bytesTransferred int64) {
@@ -154,11 +174,63 @@ func OpenArchive(fileName string, bufferSize int) (rf *AZArchive, err error) {
 	close(statChan)
 	wg.Wait() // Waiting for status monitor to exit
 
+	rf.Logger.Debug("Azure Download [END]",
+		zap.String("local", filePath),
+		zap.Int64("size", fileSize),
+		zap.String("remote", fp.Name()))
+
 	rfi, err := common.OpenArchive(fp.Name(), bufferSize, true)
 	if err != nil {
 		return nil, errors.Wrap(err, "Unable to initialize s3 connection")
 	}
 	return &AZArchive{BasicArchive: *rfi}, nil
+}
+
+func List(dir string) (files []string, err error) {
+
+	azContainerURL, subDir, err := getContainer(dir)
+	if err != nil {
+		return nil, errors.Wrap(err, "Unable to initialize azure connection")
+	}
+
+	for marker := (azblob.Marker{}); marker.NotDone(); {
+		// Get a result segment starting with the blob indicated by the current Marker.
+		listBlob, err := azContainerURL.ListBlobsFlatSegment(context.Background(), marker,
+			azblob.ListBlobsSegmentOptions{Prefix: subDir})
+		if err != nil {
+			return nil, errors.Wrap(err, "Unable to list azure connection")
+		}
+		// ListBlobs returns the start of the next segment; you MUST use this to get
+		// the next segment (after processing the current result segment).
+		marker = listBlob.NextMarker
+
+		// Process the blobs returned in this result segment (if the segment is empty, the loop body won't execute)
+		for _, blobInfo := range listBlob.Segment.BlobItems {
+			files = append(files, blobInfo.Name)
+		}
+	}
+
+	return files, err
+}
+
+func Delete(dir string, files []string) (err error) {
+
+	azContainerURL, _, err := getContainer(dir)
+	if err != nil {
+		return errors.Wrap(err, "Unable to initialize azure connection")
+	}
+
+	// Process the blobs returned in this result segment (if the segment is empty, the loop body won't execute)
+	for _, fileName := range files {
+		blobURL := azContainerURL.NewBlobURL(fileName)
+		_, err = blobURL.Delete(context.Background(), azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
+		if err != nil {
+			return errors.Wrapf(err, "Unable to delete azure blob: %s", fileName)
+		}
+		fmt.Printf("DELETED: %s\n", fileName)
+	}
+
+	return err
 }
 
 // finalizeArchive is the companion function to CreateArchiveFile().
@@ -172,7 +244,7 @@ func (rf *AZArchive) finalizeArchive() (err error) {
 		return err
 	}
 	fileSize := fi.Size()
-	finalPath := fmt.Sprintf("%s/%s", rf.contSubDir, path.Base(filePath))
+	finalPath := path.Join(rf.contSubDir, path.Base(filePath))
 	finalPath = strings.TrimSuffix(finalPath, ".tmp")
 
 	// From the Azure portal, get your storage account blob service URL endpoint.
@@ -192,12 +264,14 @@ func (rf *AZArchive) finalizeArchive() (err error) {
 	}
 	defer finalFP.Close()
 
-	log.Printf("L:%s => AZ:%s [BEGIN]", filePath, finalPath)
+	rf.Logger.Debug("Azure Upload [BEGIN]",
+		zap.String("local", filePath),
+		zap.String("remote", finalPath))
 
 	var statChan = make(chan int64)
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go common.UploadProgressPrinter(statChan, filePath, fileSize, &wg)
+	go rf.ProgressPrinter(statChan, filePath, fileSize, &wg)
 
 	_, err = azblob.UploadFileToBlockBlob(context.Background(), finalFP, blockBlobURL, azblob.UploadToBlockBlobOptions{
 		BlockSize:   4 * 1024 * 1024,
@@ -209,7 +283,11 @@ func (rf *AZArchive) finalizeArchive() (err error) {
 		err = errors.Wrapf(err, "ERROR: Blobstore upload error for: %s", filePath)
 		return err
 	}
-	log.Printf("L:%s => AZ:%s [END]", filePath, finalPath)
+	rf.Logger.Info("Azure Upload [END]",
+		zap.String("local", filePath),
+		zap.String("remote", finalPath),
+		zap.Int64("content-bytes", rf.TrueContentLength()),
+		zap.Int64("compressed-bytes", fileSize))
 
 	err = os.Remove(filePath)
 	if err != nil {

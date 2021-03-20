@@ -15,17 +15,17 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"sync"
 
 	"github.com/adobe/blackhole/lib/archive"
 	"github.com/adobe/blackhole/lib/request"
 	"github.com/adobe/blackhole/lib/sender"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // replayFile replays a given file
-func replayFile(fileName string, args *cmdArgs) (err error) {
+func replayFile(fileName string, args *cmdArgs, logger *zap.Logger) (err error) {
 
 	const archiveFileReadBufSize = 65536 // 64 K
 	var numRequestsMade = 0
@@ -69,7 +69,7 @@ Loop:
 				break Loop
 			}
 			err = errors.Wrapf(err, "corrupted replay file after %d bytes\n", bytesRead)
-			log.Printf("%+v", err) // early print here is intentional (in case we get stuck at wg.Wait() below)
+			logger.Error("Corrupted file", zap.Error(err), zap.Int("byte-offset", bytesRead)) // early print here is intentional (in case we get stuck at wg.Wait() below)
 			break Loop
 		}
 		bytesRead += n
@@ -88,18 +88,18 @@ Loop:
 			case <-errorRespChan:
 				err = errors.New("Received exit signal from one thread")
 				// this error will be returned to the caller
-				log.Printf("%+v", err) // early print here is intentional (in case we get stuck at wg.Wait() below)
+				logger.Error("Exit", zap.Error(err)) // early print here is intentional (in case we get stuck at wg.Wait() below)
 				break Loop
 			}
 		}
 
 	}
 
-	log.Printf("Closing channel.")
+	logger.Info("Closing channel.")
 	close(reqChan)
-	log.Printf("Waiting for all threads to finish")
+	logger.Info("Waiting for all threads to finish")
 	wg.Wait()
-	log.Printf("All threads completed. Total requests = %d", numRequestsMade)
+	logger.Info("All threads completed.", zap.Int("total-requests", numRequestsMade))
 
 	return err
 }

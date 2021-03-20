@@ -14,10 +14,12 @@ package main
 
 import (
 	"fmt"
-	"github.com/adobe/blackhole/lib/archive"
-	"log"
 	"sync/atomic"
 	"time"
+
+	"github.com/adobe/blackhole/lib/archive"
+	"github.com/adobe/blackhole/lib/archive/common"
+	"go.uber.org/zap"
 
 	"github.com/adobe/blackhole/lib/request"
 	"github.com/pkg/errors"
@@ -29,10 +31,15 @@ import (
 // when dummy = true, the worker just counts requests
 func requestConsumer(grID int, rc *runtimeContext, dummy bool) (err error) {
 
+	llg := rc.logger.With(zap.Int("thread", grID))
+
 	var rf archive.Archive
 	if !dummy {
 		rf, err = archive.NewArchive(rc.outDir,
-			"requests", ".fbf", rc.compress, rc.bufferSize)
+			"requests", ".fbf",
+			common.Compress(true),
+			common.BufferSize(rc.bufferSize),
+			common.Logger(rc.logger))
 		if err != nil {
 			return errors.Wrapf(err, "Unable to create archive file for worker %d", grID)
 		}
@@ -53,12 +60,13 @@ Loop:
 		select {
 
 		case <-rc.exitChans[grID]:
-			log.Printf("Worker %d got exit signal", grID)
+			llg.Warn("Got exit signal", zap.Int("thread-id", grID))
 			break Loop
 
 		case <-tickerPrint.C:
 			atomic.StoreInt64(&rc.counters[grID], int64(numRequests))
-			log.Printf("#%d# Received %d requests", grID, numRequests)
+			llg.Debug("Got requests",
+				zap.Int("requests", numRequests))
 
 		case <-tickerSave.C:
 			if !dummy && numRequests > numRequestsAtLastSave { // there is something to rotate
@@ -75,7 +83,8 @@ Loop:
 				err = req.SaveRequest(rf, false)
 				if err != nil {
 					msg := fmt.Sprintf("FATAL: writing to file %s failed.", rf.Name())
-					log.Printf("%s: Error: %+v", msg, err)
+					llg.Error("Write failed",
+						zap.String("file", rf.Name()))
 					return errors.Wrap(err, msg)
 				}
 			}
@@ -85,9 +94,13 @@ Loop:
 	if !dummy {
 		err = rf.Close()
 		if err != nil {
-			log.Fatalf("#%d# Error closing recorder file: %v", grID, err)
+			msg := fmt.Sprintf("FATAL: closing file %s failed.", rf.Name())
+			llg.Error("Closing failed",
+				zap.String("file", rf.Name()))
+			return errors.Wrap(err, msg)
 		}
-		log.Printf("#%d# Done recording %d requests.", grID, numRequests)
+		llg.Debug("Done",
+			zap.Int("requests", numRequests))
 	}
 
 	rc.wgConsumers.Done()

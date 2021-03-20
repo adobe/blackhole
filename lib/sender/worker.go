@@ -26,7 +26,6 @@ package sender
 import (
 	"bufio"
 	"bytes"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -35,6 +34,7 @@ import (
 	"github.com/adobe/blackhole/lib/request"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
+	"go.uber.org/zap"
 )
 
 type Worker struct {
@@ -45,6 +45,7 @@ type Worker struct {
 	errorRespChan chan bool
 	grID          int // like a thread-id
 	wg            *sync.WaitGroup
+	logger        *zap.Logger
 
 	// optional items
 	dryRun           bool
@@ -94,6 +95,8 @@ func NewWorker(reqChan chan *request.UnmarshalledRequest, errorRespChan chan boo
 		wg:            wg,
 		grID:          grID,
 	}
+	wrk.logger, _ = zap.NewDevelopment()
+	// defaults to verbose because of our reverse-meaning argument `quiet`
 	return wrk
 }
 
@@ -106,6 +109,9 @@ func (wrk *Worker) WithOption(opts ...Option) {
 func Quiet(quiet bool) Option {
 	return func(wrk *Worker) {
 		wrk.quiet = quiet
+		if quiet {
+			wrk.logger, _ = zap.NewProduction()
+		}
 	}
 }
 
@@ -213,7 +219,9 @@ func (wrk *Worker) processAndRelease(umr *request.UnmarshalledRequest) (curReqID
 	if wrk.reqID == "" || bytes.Equal(req.Id(), []byte(wrk.reqID)) {
 
 		if !wrk.quiet {
-			log.Printf("Request %v %s", curReqID, req.Uri())
+			wrk.logger.Debug("Request",
+				zap.String("Request-ID", curReqID),
+				zap.ByteString("URL", req.Uri()))
 		}
 		err = wrk.replayRequest(req)
 		if err != nil {
@@ -221,7 +229,9 @@ func (wrk *Worker) processAndRelease(umr *request.UnmarshalledRequest) (curReqID
 		}
 
 	} else if !wrk.quiet {
-		log.Printf("Skipping request %v %s", curReqID, req.Uri())
+		wrk.logger.Debug("Skipping",
+			zap.String("Request-ID", curReqID),
+			zap.ByteString("URL", req.Uri()))
 	}
 
 	return curReqID, nil
@@ -241,7 +251,8 @@ Loop:
 		st := time.Now()
 		curReqID, err = wrk.processAndRelease(req)
 		if err != nil {
-			log.Printf("Incorrect response from server: %+v", err)
+			wrk.logger.Error("Unexpected response from server",
+				zap.Error(err))
 			if wrk.exitOnFirstError {
 				wrk.errorRespChan <- true
 				break Loop
@@ -254,7 +265,9 @@ Loop:
 				time.Sleep(expectedDelay - actDelay)
 			} else if !warnedUserAlready && actDelay > expectedDelay*2 {
 				warnedUserAlready = true
-				log.Printf("Actual delay, %d, is way bigger than minimum delay, %d, requested", actDelay, expectedDelay)
+				wrk.logger.Warn("Actual delay is way bigger than minimum delay",
+					zap.Duration("actual", actDelay),
+					zap.Duration("expected", expectedDelay))
 			}
 		}
 
