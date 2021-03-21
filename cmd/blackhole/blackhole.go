@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -14,12 +14,14 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"sync/atomic"
 	"time"
 
-	"github.com/adobe/blackhole/lib/archive/file"
-	"github.com/adobe/blackhole/lib/archive/request"
+	"github.com/adobe/blackhole/lib/archive"
+	"github.com/adobe/blackhole/lib/archive/common"
+	"go.uber.org/zap"
+
+	"github.com/adobe/blackhole/lib/request"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
 )
@@ -29,9 +31,15 @@ import (
 // when dummy = true, the worker just counts requests
 func requestConsumer(grID int, rc *runtimeContext, dummy bool) (err error) {
 
-	var rf *file.Archive
+	llg := rc.logger.With(zap.Int("thread", grID))
+
+	var rf archive.Archive
 	if !dummy {
-		rf, err = file.NewArchiveFile(rc.outDir, rc.compress, rc.bufferSize)
+		rf, err = archive.NewArchive(rc.outDir,
+			"requests", ".fbf",
+			common.Compress(true),
+			common.BufferSize(rc.bufferSize),
+			common.Logger(rc.logger))
 		if err != nil {
 			return errors.Wrapf(err, "Unable to create archive file for worker %d", grID)
 		}
@@ -52,16 +60,17 @@ Loop:
 		select {
 
 		case <-rc.exitChans[grID]:
-			log.Printf("Worker %d got exit signal", grID)
+			llg.Warn("Got exit signal", zap.Int("thread-id", grID))
 			break Loop
 
 		case <-tickerPrint.C:
 			atomic.StoreInt64(&rc.counters[grID], int64(numRequests))
-			log.Printf("#%d# Received %d requests", grID, numRequests)
+			llg.Debug("Got requests",
+				zap.Int("requests", numRequests))
 
 		case <-tickerSave.C:
 			if !dummy && numRequests > numRequestsAtLastSave { // there is something to rotate
-				err = rf.RotateArchiveFile()
+				err = rf.Rotate()
 				numRequestsAtLastSave = numRequests
 			}
 
@@ -71,10 +80,11 @@ Loop:
 			}
 			numRequests++
 			if !dummy {
-				err = rf.SaveRequest(req, false)
+				err = req.SaveRequest(rf, false)
 				if err != nil {
-					msg := fmt.Sprintf("FATAL: Writing to file %s failed.", rf.Name)
-					log.Printf("%s: Error: %+v", msg, err)
+					msg := fmt.Sprintf("FATAL: writing to file %s failed.", rf.Name())
+					llg.Error("Write failed",
+						zap.String("file", rf.Name()))
 					return errors.Wrap(err, msg)
 				}
 			}
@@ -84,9 +94,13 @@ Loop:
 	if !dummy {
 		err = rf.Close()
 		if err != nil {
-			log.Fatalf("#%d# Error closing recorder file: %v", grID, err)
+			msg := fmt.Sprintf("FATAL: closing file %s failed.", rf.Name())
+			llg.Error("Closing failed",
+				zap.String("file", rf.Name()))
+			return errors.Wrap(err, msg)
 		}
-		log.Printf("#%d# Done recording %d requests.", grID, numRequests)
+		llg.Debug("Done",
+			zap.Int("requests", numRequests))
 	}
 
 	rc.wgConsumers.Done()

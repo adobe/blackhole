@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -15,12 +15,12 @@ package sender
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"strings"
 
 	"github.com/adobe/blackhole/lib/fbr"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // saveRequest prints the request, in human readable / plain text to a file OR stdout
@@ -75,7 +75,9 @@ func (wrk *Worker) saveRequest(req *fbr.Request, print bool) (err error) {
 		fp.Close()
 		fp = nil
 	}
-	log.Printf("Request saved in files %s and %s", headerName, bodyFileName)
+	wrk.logger.Info("Request saved",
+		zap.String("body-file", bodyFileName),
+		zap.String("header-file", headerName))
 
 	return err
 }

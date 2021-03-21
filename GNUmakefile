@@ -3,6 +3,7 @@ GOCMDDIRS=$(shell ./list_bindirs.sh)
 BVER=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 ACTION=build
 RACE=
+FLAGS=-ldflags "-X main.buildTS=$(BVER)"
 
 .PHONY: $(GOCMDDIRS)
 
@@ -17,4 +18,4 @@ install: $(GOCMDDIRS)
 debug: $(GOCMDDIRS)
 
 $(GOCMDDIRS):
-	${GO} ${ACTION} ${RACE} -ldflags "-X main.buildTS=$(BVER)" $@
+	${GO} ${ACTION} ${RACE} ${FLAGS} $@

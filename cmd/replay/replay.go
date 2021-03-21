@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -15,22 +15,22 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"sync"
 
-	"github.com/adobe/blackhole/lib/archive/file"
-	"github.com/adobe/blackhole/lib/archive/request"
+	"github.com/adobe/blackhole/lib/archive"
+	"github.com/adobe/blackhole/lib/request"
 	"github.com/adobe/blackhole/lib/sender"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // replayFile replays a given file
-func replayFile(fileName string, args *cmdArgs) (err error) {
+func replayFile(fileName string, args *cmdArgs, logger *zap.Logger) (err error) {
 
 	const archiveFileReadBufSize = 65536 // 64 K
 	var numRequestsMade = 0
 
-	rf, err := file.OpenArchiveFile(fileName, archiveFileReadBufSize)
+	rf, err := archive.OpenArchive(fileName, archiveFileReadBufSize)
 	if err != nil {
 		return errors.Wrapf(err, "Unable to open archive file: %s", fileName)
 	}
@@ -62,14 +62,14 @@ Loop:
 	for {
 		var umr *request.UnmarshalledRequest
 		var n int
-		umr, err = rf.GetNextRequest(false)
+		umr, err = request.GetNextRequest(rf, false)
 		if err != nil {
 			if err == io.EOF { // only valid non-error "error" - signifies end of file.
 				err = nil
 				break Loop
 			}
 			err = errors.Wrapf(err, "corrupted replay file after %d bytes\n", bytesRead)
-			log.Printf("%+v", err) // early print here is intentional (in case we get stuck at wg.Wait() below)
+			logger.Error("Corrupted file", zap.Error(err), zap.Int("byte-offset", bytesRead)) // early print here is intentional (in case we get stuck at wg.Wait() below)
 			break Loop
 		}
 		bytesRead += n
@@ -81,25 +81,26 @@ Loop:
 		} else {
 			select {
 			case reqChan <- umr:
-				numRequestsMade++
-				if args.numRequests > 0 && numRequestsMade >= args.numRequests {
-					break Loop
-				}
 			case <-errorRespChan:
 				err = errors.New("Received exit signal from one thread")
 				// this error will be returned to the caller
-				log.Printf("%+v", err) // early print here is intentional (in case we get stuck at wg.Wait() below)
+				logger.Error("Exit", zap.Error(err)) // early print here is intentional (in case we get stuck at wg.Wait() below)
 				break Loop
 			}
 		}
 
+		numRequestsMade++
+		if args.numRequests > 0 && numRequestsMade >= args.numRequests {
+			break Loop
+		}
+
 	}
 
-	log.Printf("Closing channel.")
+	logger.Info("Closing channel.")
 	close(reqChan)
-	log.Printf("Waiting for all threads to finish")
+	logger.Info("Waiting for all threads to finish")
 	wg.Wait()
-	log.Printf("All threads completed. Total requests = %d", numRequestsMade)
+	logger.Info("All threads completed.", zap.Int("total-requests", numRequestsMade))
 
 	return err
 }

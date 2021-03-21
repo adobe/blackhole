@@ -67,14 +67,13 @@ I use wrk to generate traffic as shown below
 * Test 1: **Server & Client**: Both running on a Macbook Pro
   * 110,000+ request/sec accepted, read, and then discarded. Run with `--skip-stats`. Request *counting* has a slight overhead, but that is the only thing on top of vanilla fast-http hello-world at this point.
   * 100,000 request/sec saved to disk (each with a 2k payload). Roughly 13 GB on disk for 6 million requests sent during a 1 minute test. Almost no overhead for disk i/o. `wrk` and other things running on the Mac is taking up some of the CPU, leaving only 4 cores for the app in either case.
-  * Data payload is made random to trigger the pathological case for compression.
-  * 95,000 req/sec with 4:1 compression ratio with LZ4 compression is enabled. Ratio depends on payload, but at least the body is made random in this test. Now disk size for 6 million requests is only about 2.8 G. [LZ4](https://github.com/lz4/lz4) is truly awesome and give us excellent compression without slowing us down.
+  * `post-random.lua` makes payload random to trigger the pathological case for compression. For truly random input, you will not get much compression. A previous version of this script incorrectly sent same data for all requests.
+  * 95,000 req/sec with 4:1 compression ratio (on compressible repeated content) with LZ4 compression is enabled. Ratio depends on payload. [LZ4](https://github.com/lz4/lz4) is truly awesome and gives us excellent compression without slowing us down.
 
 * Test 2: **Server**: One L8s vm on Azure-US-West, **Client:** One DS2 v3 in Azure-US-East as client
   * 6,000 to 7,000 request/sec average with
      * 400 concurrent connections
      * A random payload of 2,000 characters.
-     * Data payload is made random to trigger the pathological case for compression.
      * Server uses only 10% cpu resources. We could accomodate more clients.
      
 * Test 3: **Server**: One L8s vm on Azure-US-West and **Client:** One L4s in Aure-US-West (same subnet)
@@ -82,7 +81,8 @@ I use wrk to generate traffic as shown below
   * Server uses 60% cpu resources.
   
 * Test 4: **Server & Client**: One L8s vm on Azure-US-West (same host)
-  * 260,000 requests/sec average with same payload example as above.
+  * 260,000 requests/sec average with non-randomized 2k payload. Roughly similar number if payload is not saved.
+  * 140,000 requests/sec with randomized payload (more to write to disk when compressed)
   * Server uses 95% cpu resources.
  
  ### Go specific benchmarks
@@ -117,9 +117,9 @@ Code Documentation (For contributors)
 This is a binary package, not a library, but some of the components are still written as reusable libraries and the
 documentation is available here. Internal APIs may not stable and would change. Please import with caution.
 
-[github.com/adobe/blackhole/lib/archive/file](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive/file)
+[github.com/adobe/blackhole/lib/archive](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive)
 
-[github.com/adobe/blackhole/lib/archive/request](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive/request)
+[github.com/adobe/blackhole/lib/request](https://pkg.go.dev/github.com/adobe/blackhole/lib/request)
 
 [github.com/adobe/blackhole/lib/fbr](https://pkg.go.dev/github.com/adobe/blackhole/lib/fbr)
 

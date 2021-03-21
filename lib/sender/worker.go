@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -26,15 +26,15 @@ package sender
 import (
 	"bufio"
 	"bytes"
-	"log"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/adobe/blackhole/lib/archive/request"
 	"github.com/adobe/blackhole/lib/fbr"
+	"github.com/adobe/blackhole/lib/request"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
+	"go.uber.org/zap"
 )
 
 type Worker struct {
@@ -45,6 +45,7 @@ type Worker struct {
 	errorRespChan chan bool
 	grID          int // like a thread-id
 	wg            *sync.WaitGroup
+	logger        *zap.Logger
 
 	// optional items
 	dryRun           bool
@@ -94,6 +95,8 @@ func NewWorker(reqChan chan *request.UnmarshalledRequest, errorRespChan chan boo
 		wg:            wg,
 		grID:          grID,
 	}
+	wrk.logger, _ = zap.NewDevelopment()
+	// defaults to verbose because of our reverse-meaning argument `quiet`
 	return wrk
 }
 
@@ -106,6 +109,9 @@ func (wrk *Worker) WithOption(opts ...Option) {
 func Quiet(quiet bool) Option {
 	return func(wrk *Worker) {
 		wrk.quiet = quiet
+		if quiet {
+			wrk.logger, _ = zap.NewProduction()
+		}
 	}
 }
 
@@ -181,6 +187,7 @@ func (wrk *Worker) replayRequest(reqEnvelope *fbr.Request) (err error) {
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseResponse(resp)
 
+		//log.Printf("%+v", req)
 		err = fasthttp.Do(req, resp)
 		if err != nil {
 			return errors.Wrap(err, "Proxy request failed")
@@ -204,27 +211,39 @@ func (wrk *Worker) replayRequest(reqEnvelope *fbr.Request) (err error) {
 	return nil
 }
 
-func (wrk *Worker) processAndRelease(umr *request.UnmarshalledRequest) (curReqID string, err error) {
+func (wrk *Worker) processAndRelease(umr *request.UnmarshalledRequest) (stop bool, err error) {
 
 	req := umr.Request()
-	curReqID = ""
 	defer umr.Release()
 
-	if wrk.reqID == "" || bytes.Equal(req.Id(), []byte(wrk.reqID)) {
+	skip := false
+	if wrk.reqID != "" {
+		if !bytes.Equal(req.Id(), []byte(wrk.reqID)) {
+			skip = true // not what we are looking for
+		} else {
+			stop = true // stop after processing this one
+		}
+	}
+
+	if !skip {
 
 		if !wrk.quiet {
-			log.Printf("Request %v %s", curReqID, req.Uri())
+			wrk.logger.Debug("Request",
+				zap.ByteString("Request-ID", req.Id()),
+				zap.ByteString("URL", req.Uri()))
 		}
 		err = wrk.replayRequest(req)
 		if err != nil {
-			return curReqID, errors.Wrap(err, "Request replay failed")
+			return stop, errors.Wrap(err, "Request replay failed")
 		}
 
 	} else if !wrk.quiet {
-		log.Printf("Skipping request %v %s", curReqID, req.Uri())
+		wrk.logger.Debug("Skipping",
+			zap.ByteString("Request-ID", req.Id()),
+			zap.ByteString("URL", req.Uri()))
 	}
 
-	return curReqID, nil
+	return stop, nil
 }
 
 func (wrk *Worker) Run() {
@@ -233,15 +252,16 @@ func (wrk *Worker) Run() {
 	warnedUserAlready := false
 
 	var err error
-	var curReqID string
+	var stop bool
 
 Loop:
 	for req := range wrk.reqChan {
 
 		st := time.Now()
-		curReqID, err = wrk.processAndRelease(req)
+		stop, err = wrk.processAndRelease(req)
 		if err != nil {
-			log.Printf("Incorrect response from server: %+v", err)
+			wrk.logger.Error("Unexpected response from server",
+				zap.Error(err))
 			if wrk.exitOnFirstError {
 				wrk.errorRespChan <- true
 				break Loop
@@ -254,11 +274,13 @@ Loop:
 				time.Sleep(expectedDelay - actDelay)
 			} else if !warnedUserAlready && actDelay > expectedDelay*2 {
 				warnedUserAlready = true
-				log.Printf("Actual delay, %d, is way bigger than minimum delay, %d, requested", actDelay, expectedDelay)
+				wrk.logger.Warn("Actual delay is way bigger than minimum delay",
+					zap.Duration("actual", actDelay),
+					zap.Duration("expected", expectedDelay))
 			}
 		}
 
-		if wrk.reqID != "" && curReqID == wrk.reqID {
+		if stop {
 			wrk.errorRespChan <- true
 			break Loop
 		}

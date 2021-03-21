@@ -1,5 +1,5 @@
 /*
-Copyright 2020 Adobe. All rights reserved.
+Copyright 2021 Adobe. All rights reserved.
 This file is licensed to you under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License. You may obtain a copy
 of the License at http://www.apache.org/licenses/LICENSE-2.0
@@ -31,7 +31,7 @@ import (
 // `viper` config was already loaded from main via `loadConfig()` call.
 // returns *tls.Config, nil if TLS is requested
 // returns nil, nil if TLS is not requested
-func loadTLSConfig() (cfg *tls.Config, err error) {
+func loadTLSConfig(rc *runtimeContext) (cfg *tls.Config, err error) {
 	tlsConfig := viper.Get("tls")
 	if v, ok := tlsConfig.(map[string]interface{}); ok && v != nil {
 		certFile, ok := v["cert"].(string)
@@ -58,7 +58,7 @@ func loadTLSConfig() (cfg *tls.Config, err error) {
 		return cfg, nil
 	}
 
-	log.Printf("INFO: No TLS certificate configured")
+	rc.logger.Warn("No TLS certificate configured")
 
 	return nil, nil
 }
