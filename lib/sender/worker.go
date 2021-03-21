@@ -187,6 +187,7 @@ func (wrk *Worker) replayRequest(reqEnvelope *fbr.Request) (err error) {
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseResponse(resp)
 
+		//log.Printf("%+v", req)
 		err = fasthttp.Do(req, resp)
 		if err != nil {
 			return errors.Wrap(err, "Proxy request failed")
@@ -210,31 +211,39 @@ func (wrk *Worker) replayRequest(reqEnvelope *fbr.Request) (err error) {
 	return nil
 }
 
-func (wrk *Worker) processAndRelease(umr *request.UnmarshalledRequest) (curReqID string, err error) {
+func (wrk *Worker) processAndRelease(umr *request.UnmarshalledRequest) (stop bool, err error) {
 
 	req := umr.Request()
-	curReqID = ""
 	defer umr.Release()
 
-	if wrk.reqID == "" || bytes.Equal(req.Id(), []byte(wrk.reqID)) {
+	skip := false
+	if wrk.reqID != "" {
+		if !bytes.Equal(req.Id(), []byte(wrk.reqID)) {
+			skip = true // not what we are looking for
+		} else {
+			stop = true // stop after processing this one
+		}
+	}
+
+	if !skip {
 
 		if !wrk.quiet {
 			wrk.logger.Debug("Request",
-				zap.String("Request-ID", curReqID),
+				zap.ByteString("Request-ID", req.Id()),
 				zap.ByteString("URL", req.Uri()))
 		}
 		err = wrk.replayRequest(req)
 		if err != nil {
-			return curReqID, errors.Wrap(err, "Request replay failed")
+			return stop, errors.Wrap(err, "Request replay failed")
 		}
 
 	} else if !wrk.quiet {
 		wrk.logger.Debug("Skipping",
-			zap.String("Request-ID", curReqID),
+			zap.ByteString("Request-ID", req.Id()),
 			zap.ByteString("URL", req.Uri()))
 	}
 
-	return curReqID, nil
+	return stop, nil
 }
 
 func (wrk *Worker) Run() {
@@ -243,13 +252,13 @@ func (wrk *Worker) Run() {
 	warnedUserAlready := false
 
 	var err error
-	var curReqID string
+	var stop bool
 
 Loop:
 	for req := range wrk.reqChan {
 
 		st := time.Now()
-		curReqID, err = wrk.processAndRelease(req)
+		stop, err = wrk.processAndRelease(req)
 		if err != nil {
 			wrk.logger.Error("Unexpected response from server",
 				zap.Error(err))
@@ -271,7 +280,7 @@ Loop:
 			}
 		}
 
-		if wrk.reqID != "" && curReqID == wrk.reqID {
+		if stop {
 			wrk.errorRespChan <- true
 			break Loop
 		}

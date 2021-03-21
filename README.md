@@ -117,9 +117,9 @@ Code Documentation (For contributors)
 This is a binary package, not a library, but some of the components are still written as reusable libraries and the
 documentation is available here. Internal APIs may not stable and would change. Please import with caution.
 
-[github.com/adobe/blackhole/lib/archive/file](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive/file)
+[github.com/adobe/blackhole/lib/archive](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive)
 
-[github.com/adobe/blackhole/lib/archive/request](https://pkg.go.dev/github.com/adobe/blackhole/lib/archive/request)
+[github.com/adobe/blackhole/lib/request](https://pkg.go.dev/github.com/adobe/blackhole/lib/request)
 
 [github.com/adobe/blackhole/lib/fbr](https://pkg.go.dev/github.com/adobe/blackhole/lib/fbr)
 

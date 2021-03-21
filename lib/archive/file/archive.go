@@ -10,9 +10,7 @@ OF ANY KIND, either express or implied. See the License for the specific languag
 governing permissions and limitations under the License.
 */
 
-// Package file provides functionality to read and write to a archive file of
-// HTTP requests. Requests are serialized using Flatbuffers (See request.fbs for schema)
-// Optionally data can be compressed using LZ4. LZ4 provides a CPU friendly compression
+// Package file provides archive interface for local directories/files
 package file
 
 import (

@@ -10,9 +10,7 @@ OF ANY KIND, either express or implied. See the License for the specific languag
 governing permissions and limitations under the License.
 */
 
-// Package file provides functionality to read and write to a archive file of
-// HTTP requests. Requests are serialized using Flatbuffers (See request.fbs for schema)
-// Optionally data can be compressed using LZ4. LZ4 provides a CPU friendly compression
+// Package s3f provides archive interface for S3
 package s3f
 
 import (
@@ -65,8 +63,8 @@ func s3Init() (err error) {
 
 // NewArchive creates a new recorder file (for writing). The caller must call
 // `rf.Close()` on the resulting handle to close out the file.
-// File is atomically renamed to the final name only after everything
-// is flushed to disk and file is closed. `*S3Archive` returned is an io.Writer
+// File is uploaded to s3 after it is flushed to disk and file is closed.
+// `*S3Archive` returned is an io.Writer
 func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicArchive) error) (rf *S3Archive, err error) {
 
 	err = s3Init()

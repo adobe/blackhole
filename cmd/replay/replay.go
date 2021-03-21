@@ -81,16 +81,17 @@ Loop:
 		} else {
 			select {
 			case reqChan <- umr:
-				numRequestsMade++
-				if args.numRequests > 0 && numRequestsMade >= args.numRequests {
-					break Loop
-				}
 			case <-errorRespChan:
 				err = errors.New("Received exit signal from one thread")
 				// this error will be returned to the caller
 				logger.Error("Exit", zap.Error(err)) // early print here is intentional (in case we get stuck at wg.Wait() below)
 				break Loop
 			}
+		}
+
+		numRequestsMade++
+		if args.numRequests > 0 && numRequestsMade >= args.numRequests {
+			break Loop
 		}
 
 	}

@@ -12,7 +12,6 @@ governing permissions and limitations under the License.
 
 // Package request provides functionality to create an manage individual
 // HTTP requests. Requests are serialized using Flatbuffers (See request.fbs for schema)
-// This package is to be used in conjunction with the file package
 package request
 
 import (
