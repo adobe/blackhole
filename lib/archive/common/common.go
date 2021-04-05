@@ -36,27 +36,28 @@ import (
 // Typically one would rename the file to the final desired name
 // OR upload the file to S3 or Azure Blobstore. Users of this
 // library must provide this call back implementation.
-type FinalizerFunc func() (err error)
+type FinalizerFunc func() (finalName string, err error)
 
 // BasicArchive encapsulates some common functionality between
 // S3Archive, FileArchive, and AZArchive
 type BasicArchive struct {
-	Logger        *zap.Logger
-	writing       bool
-	deleteOnClose bool
-	fp            *os.File      // Underlying FP. Needed to close and flush after we are done.
-	zw            *lz4.Writer   // Used only if compression is enabled.
-	zr            *lz4.Reader   // Used only if compression is enabled.
-	bw            *bufio.Writer // If set, all writes are buffered
-	br            *bufio.Reader // If set, all reads are buffered
-	fqfn          string        // name, for debugging/printing only
-	stageDir      string
-	prefix        string
-	extension     string
-	compress      bool
-	bufferSize    int
-	bytesWritten  int64 // to see if file is empty at Close (during finalize)
-	Finalizer     FinalizerFunc
+	Logger         *zap.Logger
+	writing        bool
+	deleteOnClose  bool
+	fp             *os.File      // Underlying FP. Needed to close and flush after we are done.
+	zw             *lz4.Writer   // Used only if compression is enabled.
+	zr             *lz4.Reader   // Used only if compression is enabled.
+	bw             *bufio.Writer // If set, all writes are buffered
+	br             *bufio.Reader // If set, all reads are buffered
+	fqfn           string        // name, for debugging/printing only
+	stageDir       string
+	prefix         string
+	extension      string
+	compress       bool
+	bufferSize     int
+	bytesWritten   int64 // to see if file is empty at Close (during finalize)
+	Finalizer      FinalizerFunc
+	finalizedFiles []string
 }
 
 func NewBasicArchive(stageDir, prefix, extension string,
@@ -218,10 +219,19 @@ func (rf *BasicArchive) Close() (err error) {
 	}
 
 	if rf.writing && rf.Finalizer != nil {
-		return rf.Finalizer()
+		var finalName string
+		finalName, err = rf.Finalizer()
+		if err != nil && finalName != "" {
+			rf.finalizedFiles = append(rf.finalizedFiles, finalName)
+		}
+		return err
 	}
 
 	return err
+}
+
+func (rf *BasicArchive) FinalizedFiles() []string {
+	return rf.finalizedFiles
 }
 
 func (rf *BasicArchive) Reset() {
