@@ -149,7 +149,7 @@ func Delete(dir string, files []string) (err error) {
 
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will upload to S3.
-func (rf *S3Archive) finalizeArchive() (err error) {
+func (rf *S3Archive) finalizeArchive() (finalFile string, err error) {
 
 	filePath := rf.Name()
 	finalPath := path.Join(rf.contSubDir, path.Base(filePath))
@@ -157,9 +157,10 @@ func (rf *S3Archive) finalizeArchive() (err error) {
 
 	finalFP, err := os.Open(filePath)
 	if err != nil {
-		return errors.Wrapf(err, "unable to reopen archive file: %s", filePath)
+		return "", errors.Wrapf(err, "unable to reopen archive file: %s", filePath)
 	}
 	defer finalFP.Close()
+	finalFile = path.Base(finalPath) // Only filename part
 
 	rf.Logger.Debug("S3 Upload [BEGIN]",
 		zap.String("local", filePath),
@@ -190,7 +191,7 @@ func (rf *S3Archive) finalizeArchive() (err error) {
 		Body:   finalFP,
 	})
 	if err != nil {
-		return errors.Wrapf(err, "unable to reopen archive file: %s", finalPath)
+		return "", errors.Wrapf(err, "unable to reopen archive file: %s", finalPath)
 	}
 
 	rf.Logger.Info("S3 Upload [END]",
@@ -199,7 +200,7 @@ func (rf *S3Archive) finalizeArchive() (err error) {
 
 	err = os.Remove(filePath)
 	if err != nil {
-		return errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", filePath)
+		return "", errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", filePath)
 	}
 	rf.Reset()
 
@@ -212,5 +213,5 @@ func (rf *S3Archive) finalizeArchive() (err error) {
 
 	*/
 
-	return nil
+	return finalFile, err
 }

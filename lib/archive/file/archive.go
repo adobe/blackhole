@@ -37,6 +37,8 @@ type FileArchive struct {
 // is flushed to disk and file is closed. `*FileArchive` returned is an io.Writer
 func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicArchive) error) (rf *FileArchive, err error) {
 
+	outDir = strings.TrimPrefix(outDir, "file://")
+
 	ba, err := common.NewBasicArchive(
 		outDir, prefix, extension, options...)
 	if err != nil {
@@ -66,21 +68,23 @@ func OpenArchive(fileName string, bufferSize int) (rf *FileArchive, err error) {
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will rename the temporary file to its final name. File should be considered
 // incomplete if it ends with a .tmp extension.
-func (rf *FileArchive) finalizeArchive() (err error) {
+func (rf *FileArchive) finalizeArchive() (finalFile string, err error) {
 
 	filePath := rf.Name()
 	fi, err := os.Stat(filePath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to stat file %s", filePath)
-		return err
+		return "", err
 	}
 
 	finalPath := strings.TrimSuffix(filePath, ".tmp")
 	err = os.Rename(filePath, finalPath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to rename archive file: %s", filePath)
-		return err
+		return "", err
 	}
+	finalFile = path.Base(finalPath) // Only filename part
+
 	rf.Logger.Info("Renamed",
 		zap.String("old", filePath),
 		zap.String("new", finalPath),
@@ -93,11 +97,11 @@ func (rf *FileArchive) finalizeArchive() (err error) {
 	err = os.Chmod(finalPath, fileMode)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to chmod archive file: %s", finalPath)
-		return err
+		return "", err
 	}
 
 	rf.Reset()
-	return nil
+	return finalFile, nil
 }
 
 func List(dir string) (files []string, err error) {
@@ -117,8 +121,9 @@ func List(dir string) (files []string, err error) {
 		}
 
 		/* this is better code to include sub-directories
-		 * but they are a bit more work to support
-		 * for now, we don't need to list or remove sub-directories
+		 * but they are a bit more work to support.
+		 *
+		 * For now, we don't need to list or remove sub-directories
 
 		// fmt.Printf("path = >%s<, relpath=>%s<\n", path, relPath)
 		if relPath != "" && relPath != "." {
