@@ -187,26 +187,31 @@ func (rf *BasicArchive) Close() (err error) {
 
 	if rf.zw != nil {
 		err = rf.zw.Close()
+		if err != nil {
+			return err
+		}
 		rf.zw = nil
 	}
 
-	if err == nil && rf.bw != nil {
+	if rf.bw != nil {
 		err = rf.bw.Flush()
+		if err != nil {
+			return err
+		}
+		rf.bw = nil
 	}
 
-	if err != nil {
-		return err
-	}
-
+	// These readers don't have .Close() or .Flush()
 	rf.zr = nil
+	rf.br = nil
 
 	if rf.fp != nil {
 		err = rf.fp.Close()
+		if err != nil {
+			return err
+		}
 		rf.fp = nil
 	}
-
-	rf.bw = nil
-	rf.br = nil
 
 	filePath := rf.Name()
 	if (rf.writing && rf.bytesWritten == 0) || (!rf.writing && rf.deleteOnClose) {
@@ -221,12 +226,18 @@ func (rf *BasicArchive) Close() (err error) {
 	if rf.writing && rf.Finalizer != nil {
 		var finalName string
 		finalName, err = rf.Finalizer()
-		if err != nil && finalName != "" {
+		rf.Logger.Debug("Finalizer returned",
+			zap.String("finalName", finalName),
+			zap.Error(err))
+		if err != nil {
+			return err
+		}
+		if finalName != "" {
 			rf.finalizedFiles = append(rf.finalizedFiles, finalName)
 		}
-		return err
 	}
 
+	rf.Reset() // in case Close() gets called again
 	return err
 }
 
@@ -236,6 +247,9 @@ func (rf *BasicArchive) FinalizedFiles() []string {
 
 func (rf *BasicArchive) Reset() {
 	rf.bytesWritten = 0 // reset the tracker
+	rf.Finalizer = nil
+	rf.writing = false
+	rf.deleteOnClose = false
 	rf.fqfn = ""
 }
 

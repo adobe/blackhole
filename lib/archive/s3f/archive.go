@@ -149,10 +149,10 @@ func Delete(dir string, files []string) (err error) {
 
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will upload to S3.
-func (rf *S3Archive) finalizeArchive() (finalPath string, err error) {
+func (rf *S3Archive) finalizeArchive() (finalFile string, err error) {
 
 	filePath := rf.Name()
-	finalPath = path.Join(rf.contSubDir, path.Base(filePath))
+	finalPath := path.Join(rf.contSubDir, path.Base(filePath))
 	finalPath = strings.TrimSuffix(finalPath, ".tmp")
 
 	finalFP, err := os.Open(filePath)
@@ -160,6 +160,7 @@ func (rf *S3Archive) finalizeArchive() (finalPath string, err error) {
 		return "", errors.Wrapf(err, "unable to reopen archive file: %s", filePath)
 	}
 	defer finalFP.Close()
+	finalFile = path.Base(finalPath) // Only filename part
 
 	rf.Logger.Debug("S3 Upload [BEGIN]",
 		zap.String("local", filePath),
@@ -212,5 +213,5 @@ func (rf *S3Archive) finalizeArchive() (finalPath string, err error) {
 
 	*/
 
-	return finalPath, err
+	return finalFile, err
 }

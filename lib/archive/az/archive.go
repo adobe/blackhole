@@ -233,7 +233,7 @@ func Delete(dir string, files []string) (err error) {
 
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will upload to Azure Blobstore.
-func (rf *AZArchive) finalizeArchive() (finalPath string, err error) {
+func (rf *AZArchive) finalizeArchive() (finalFile string, err error) {
 
 	filePath := rf.Name()
 	fi, err := os.Stat(filePath)
@@ -242,8 +242,9 @@ func (rf *AZArchive) finalizeArchive() (finalPath string, err error) {
 		return "", err
 	}
 	fileSize := fi.Size()
-	finalPath = path.Join(rf.contSubDir, path.Base(filePath))
+	finalPath := path.Join(rf.contSubDir, path.Base(filePath))
 	finalPath = strings.TrimSuffix(finalPath, ".tmp")
+	finalFile = path.Base(finalPath) // Only filename part
 
 	// From the Azure portal, get your storage account blob service URL endpoint.
 	URL, _ := url.Parse(
@@ -296,5 +297,5 @@ func (rf *AZArchive) finalizeArchive() (finalPath string, err error) {
 	wg.Wait() // Waiting for status monitor to exit
 	rf.Reset()
 
-	return finalPath, nil
+	return finalFile, nil
 }

@@ -37,6 +37,8 @@ type FileArchive struct {
 // is flushed to disk and file is closed. `*FileArchive` returned is an io.Writer
 func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicArchive) error) (rf *FileArchive, err error) {
 
+	outDir = strings.TrimPrefix(outDir, "file://")
+
 	ba, err := common.NewBasicArchive(
 		outDir, prefix, extension, options...)
 	if err != nil {
@@ -66,7 +68,7 @@ func OpenArchive(fileName string, bufferSize int) (rf *FileArchive, err error) {
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will rename the temporary file to its final name. File should be considered
 // incomplete if it ends with a .tmp extension.
-func (rf *FileArchive) finalizeArchive() (finalPath string, err error) {
+func (rf *FileArchive) finalizeArchive() (finalFile string, err error) {
 
 	filePath := rf.Name()
 	fi, err := os.Stat(filePath)
@@ -75,12 +77,14 @@ func (rf *FileArchive) finalizeArchive() (finalPath string, err error) {
 		return "", err
 	}
 
-	finalPath = strings.TrimSuffix(filePath, ".tmp")
+	finalPath := strings.TrimSuffix(filePath, ".tmp")
 	err = os.Rename(filePath, finalPath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to rename archive file: %s", filePath)
 		return "", err
 	}
+	finalFile = path.Base(finalPath) // Only filename part
+
 	rf.Logger.Info("Renamed",
 		zap.String("old", filePath),
 		zap.String("new", finalPath),
@@ -97,7 +101,7 @@ func (rf *FileArchive) finalizeArchive() (finalPath string, err error) {
 	}
 
 	rf.Reset()
-	return finalPath, nil
+	return finalFile, nil
 }
 
 func List(dir string) (files []string, err error) {
