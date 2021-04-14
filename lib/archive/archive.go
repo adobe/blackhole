@@ -31,7 +31,7 @@ type Archive interface {
 	Rotate() (err error)
 	Flush() (err error)
 	Name() string
-	FinalizedFiles() []string
+	FinalizedFiles() ([]string, map[string]common.ArchiveFileStats)
 }
 
 func getProto(outDir string) string {
