@@ -38,26 +38,31 @@ import (
 // library must provide this call back implementation.
 type FinalizerFunc func() (finalName string, err error)
 
+type ArchiveFileStats struct {
+	ContentSize int
+}
+
 // BasicArchive encapsulates some common functionality between
 // S3Archive, FileArchive, and AZArchive
 type BasicArchive struct {
-	Logger         *zap.Logger
-	writing        bool
-	deleteOnClose  bool
-	fp             *os.File      // Underlying FP. Needed to close and flush after we are done.
-	zw             *lz4.Writer   // Used only if compression is enabled.
-	zr             *lz4.Reader   // Used only if compression is enabled.
-	bw             *bufio.Writer // If set, all writes are buffered
-	br             *bufio.Reader // If set, all reads are buffered
-	fqfn           string        // name, for debugging/printing only
-	stageDir       string
-	prefix         string
-	extension      string
-	compress       bool
-	bufferSize     int
-	bytesWritten   int64 // to see if file is empty at Close (during finalize)
-	Finalizer      FinalizerFunc
-	finalizedFiles []string
+	Logger           *zap.Logger
+	writing          bool
+	deleteOnClose    bool
+	fp               *os.File      // Underlying FP. Needed to close and flush after we are done.
+	zw               *lz4.Writer   // Used only if compression is enabled.
+	zr               *lz4.Reader   // Used only if compression is enabled.
+	bw               *bufio.Writer // If set, all writes are buffered
+	br               *bufio.Reader // If set, all reads are buffered
+	fqfn             string        // name, for debugging/printing only
+	stageDir         string
+	prefix           string
+	extension        string
+	compress         bool
+	bufferSize       int
+	bytesWritten     int64 // to see if file is empty at Close (during finalize)
+	Finalizer        FinalizerFunc
+	finalizedFiles   []string
+	finalizedDetails map[string]ArchiveFileStats
 }
 
 func NewBasicArchive(stageDir, prefix, extension string,
@@ -66,11 +71,12 @@ func NewBasicArchive(stageDir, prefix, extension string,
 	extension = strings.TrimLeft(extension, ".") // allow extension to be specified as xyz or .xyz
 
 	ba = &BasicArchive{
-		writing:       true,
-		deleteOnClose: false,
-		stageDir:      stageDir,
-		prefix:        prefix,
-		extension:     extension,
+		writing:          true,
+		deleteOnClose:    false,
+		stageDir:         stageDir,
+		prefix:           prefix,
+		extension:        extension,
+		finalizedDetails: make(map[string]ArchiveFileStats),
 	}
 	for _, option := range options {
 		option(ba)
@@ -185,6 +191,13 @@ func (rf *BasicArchive) Flush() (err error) {
 // final-name
 func (rf *BasicArchive) Close() (err error) {
 
+	// -------------------------------------------------------
+	// NOTE: Make sure Close() can be called *more than once*
+	// without any unexpected results. This is to allow easy
+	// use in
+	//          defer <archive>.Close()
+	// statements without over-thinking it.
+	// -------------------------------------------------------
 	if rf.zw != nil {
 		err = rf.zw.Close()
 		if err != nil {
@@ -211,29 +224,31 @@ func (rf *BasicArchive) Close() (err error) {
 			return err
 		}
 		rf.fp = nil
-	}
 
-	filePath := rf.Name()
-	if (rf.writing && rf.bytesWritten == 0) || (!rf.writing && rf.deleteOnClose) {
-		rf.Logger.Debug("Deleting file",
-			zap.String("file", filePath),
-			zap.Int64("bytesWritten", rf.bytesWritten),
-			zap.Bool("deleteOnClose", rf.deleteOnClose))
-		err = os.Remove(filePath)
-		return err
-	}
-
-	if rf.writing && rf.Finalizer != nil {
-		var finalName string
-		finalName, err = rf.Finalizer()
-		rf.Logger.Debug("Finalizer returned",
-			zap.String("finalName", finalName),
-			zap.Error(err))
-		if err != nil {
+		filePath := rf.Name()
+		if (rf.writing && rf.bytesWritten == 0) || (!rf.writing && rf.deleteOnClose) {
+			rf.Logger.Debug("Deleting file",
+				zap.String("file", filePath),
+				zap.Int64("bytesWritten", rf.bytesWritten),
+				zap.Bool("deleteOnClose", rf.deleteOnClose))
+			err = os.Remove(filePath)
 			return err
 		}
-		if finalName != "" {
-			rf.finalizedFiles = append(rf.finalizedFiles, finalName)
+
+		if rf.writing && rf.Finalizer != nil {
+			var finalName string
+			finalName, err = rf.Finalizer()
+			rf.Logger.Debug("Finalizer returned",
+				zap.String("finalName", finalName),
+				zap.Error(err))
+			if err != nil {
+				return err
+			}
+			if finalName != "" {
+				rf.finalizedFiles = append(rf.finalizedFiles, finalName)
+				rf.finalizedDetails[finalName] = ArchiveFileStats{
+					ContentSize: int(rf.bytesWritten)}
+			}
 		}
 	}
 
@@ -241,15 +256,13 @@ func (rf *BasicArchive) Close() (err error) {
 	return err
 }
 
-func (rf *BasicArchive) FinalizedFiles() []string {
-	return rf.finalizedFiles
+func (rf *BasicArchive) FinalizedFiles() ([]string, map[string]ArchiveFileStats) {
+	return rf.finalizedFiles, rf.finalizedDetails
 }
 
 func (rf *BasicArchive) Reset() {
+	// Get it ready for next rotated file
 	rf.bytesWritten = 0 // reset the tracker
-	rf.Finalizer = nil
-	rf.writing = false
-	rf.deleteOnClose = false
 	rf.fqfn = ""
 }
 

@@ -100,7 +100,6 @@ func (rf *FileArchive) finalizeArchive() (finalFile string, err error) {
 		return "", err
 	}
 
-	rf.Reset()
 	return finalFile, nil
 }
 

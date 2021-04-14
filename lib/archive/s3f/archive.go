@@ -202,7 +202,6 @@ func (rf *S3Archive) finalizeArchive() (finalFile string, err error) {
 	if err != nil {
 		return "", errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", filePath)
 	}
-	rf.Reset()
 
 	/* Progress tracking is not possible with S3manager API
 	 * suggested work around is hacky

@@ -295,7 +295,6 @@ func (rf *AZArchive) finalizeArchive() (finalFile string, err error) {
 
 	close(statChan)
 	wg.Wait() // Waiting for status monitor to exit
-	rf.Reset()
 
 	return finalFile, nil
 }
