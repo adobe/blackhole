@@ -17,6 +17,13 @@ func GetRootAsRequest(buf []byte, offset flatbuffers.UOffsetT) *Request {
 	return x
 }
 
+func GetSizePrefixedRootAsRequest(buf []byte, offset flatbuffers.UOffsetT) *Request {
+	n := flatbuffers.GetUOffsetT(buf[offset+flatbuffers.SizeUint32:])
+	x := &Request{}
+	x.Init(buf, n+offset+flatbuffers.SizeUint32)
+	return x
+}
+
 func (rcv *Request) Init(buf []byte, i flatbuffers.UOffsetT) {
 	rcv._tab.Bytes = buf
 	rcv._tab.Pos = i
