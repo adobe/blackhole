@@ -48,7 +48,7 @@ func loadTLSConfig(rc *runtimeContext) (cfg *tls.Config, err error) {
 		if privKeyFile == "" {
 			return nil, errors.Wrapf(err, "\"tls\" key must have a subkey \"privkey\" with private key PEM filepath")
 		}
-		cert, err := tls.LoadX509KeyPair(privKeyFile, privKeyFile)
+		cert, err := tls.LoadX509KeyPair(certFile, privKeyFile)
 		if err != nil {
 			return nil, errors.Wrapf(err, "Error loading cert=%s key=%s",
 				certFile, privKeyFile)
