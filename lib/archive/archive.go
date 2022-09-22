@@ -2,17 +2,16 @@
 // is written to local, azure blob store, or amazon s3.
 //
 // Features include
-//     1. Ability to maintain the file as a temporary `.tmp`
-//        until it is `.Close()`-ed at which point it is automatically
-//        renamed to the final name
-//     2. Ability to keep file as a local file until uploaded to S3 or AZ Blob
-//        NOTE: direct streaming upload to S3/AZ is not yet performant.
-//     3. Ability to specify local,s3,az all in a unified URL format
-//        s3://bucket/path/to/diretory/
-//        az://containers/path/to/directory/
-//        file:///path/to/directory
-//        Anything else is assumed to be a local file path
-//
+//  1. Ability to maintain the file as a temporary `.tmp`
+//     until it is `.Close()`-ed at which point it is automatically
+//     renamed to the final name
+//  2. Ability to keep file as a local file until uploaded to S3 or AZ Blob
+//     NOTE: direct streaming upload to S3/AZ is not yet performant.
+//  3. Ability to specify local,s3,az all in a unified URL format
+//     s3://bucket/path/to/diretory/
+//     az://containers/path/to/directory/
+//     file:///path/to/directory
+//     Anything else is assumed to be a local file path
 package archive
 
 import (
@@ -23,6 +22,7 @@ import (
 	"github.com/adobe/blackhole/lib/archive/common"
 	"github.com/adobe/blackhole/lib/archive/file"
 	"github.com/adobe/blackhole/lib/archive/s3f"
+	"github.com/adobe/blackhole/lib/archive/sum"
 	"github.com/pkg/errors"
 )
 
@@ -31,7 +31,7 @@ type Archive interface {
 	Rotate() (err error)
 	Flush() (err error)
 	Name() string
-	FinalizedFiles() ([]string, map[string]common.ArchiveFileStats)
+	FinalizedFiles() map[string]common.ArchiveFileDetails
 }
 
 func getProto(outDir string) string {
@@ -68,6 +68,12 @@ func NewArchive(outDir, prefix, extension string, options ...func(*common.BasicA
 		return rf, nil
 	case "s3":
 		rf, err = s3f.NewArchive(outDir, prefix, extension, options...)
+		if err != nil {
+			return nil, errors.Wrapf(err, "Unable to create local file")
+		}
+		return rf, nil
+	case "sum":
+		rf, err = sum.NewArchive(outDir, prefix, extension, options...)
 		if err != nil {
 			return nil, errors.Wrapf(err, "Unable to create local file")
 		}

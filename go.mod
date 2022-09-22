@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.15.5
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.11.10
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.26.9
+	github.com/cespare/xxhash v1.1.0
 	github.com/fsnotify/fsnotify v1.5.4 // indirect
 	github.com/google/flatbuffers v2.0.6+incompatible
 	github.com/klauspost/compress v1.15.2 // indirect

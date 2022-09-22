@@ -233,18 +233,20 @@ func Delete(dir string, files []string) (err error) {
 
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will upload to Azure Blobstore.
-func (rf *AZArchive) finalizeArchive() (finalFile string, err error) {
+func (rf *AZArchive) finalizeArchive() (finalFile common.ArchiveFileDetails, err error) {
 
 	filePath := rf.Name()
 	fi, err := os.Stat(filePath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to stat file %s", filePath)
-		return "", err
+		return finalFile, err
 	}
 	fileSize := fi.Size()
 	finalPath := path.Join(rf.contSubDir, path.Base(filePath))
 	finalPath = strings.TrimSuffix(finalPath, ".tmp")
-	finalFile = path.Base(finalPath) // Only filename part
+	finalFile.BytesWritten = fileSize
+	finalFile.FileName = path.Base(finalPath) // Only filename part
+	finalFile.ChunksWritten = rf.ChunksWritten
 
 	// From the Azure portal, get your storage account blob service URL endpoint.
 	URL, _ := url.Parse(
@@ -259,7 +261,7 @@ func (rf *AZArchive) finalizeArchive() (finalFile string, err error) {
 	finalFP, err := os.Open(filePath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to reopen archive file: %s", finalPath)
-		return "", err
+		return finalFile, err
 	}
 	defer finalFP.Close()
 
@@ -280,7 +282,7 @@ func (rf *AZArchive) finalizeArchive() (finalFile string, err error) {
 		}})
 	if err != nil {
 		err = errors.Wrapf(err, "ERROR: Blobstore upload error for: %s", filePath)
-		return "", err
+		return finalFile, err
 	}
 	rf.Logger.Info("Azure Upload [END]",
 		zap.String("local", filePath),
@@ -290,7 +292,7 @@ func (rf *AZArchive) finalizeArchive() (finalFile string, err error) {
 
 	err = os.Remove(filePath)
 	if err != nil {
-		return "", errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", filePath)
+		return finalFile, errors.Wrapf(err, "unable to remove archive file %s after uploading to azure", filePath)
 	}
 
 	close(statChan)

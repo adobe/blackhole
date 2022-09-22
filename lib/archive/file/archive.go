@@ -68,22 +68,25 @@ func OpenArchive(fileName string, bufferSize int) (rf *FileArchive, err error) {
 // finalizeArchive is the companion function to CreateArchiveFile().
 // finalize will rename the temporary file to its final name. File should be considered
 // incomplete if it ends with a .tmp extension.
-func (rf *FileArchive) finalizeArchive() (finalFile string, err error) {
+func (rf *FileArchive) finalizeArchive() (finalFile common.ArchiveFileDetails, err error) {
 
 	filePath := rf.Name()
 	fi, err := os.Stat(filePath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to stat file %s", filePath)
-		return "", err
+		return finalFile, err
 	}
 
 	finalPath := strings.TrimSuffix(filePath, ".tmp")
 	err = os.Rename(filePath, finalPath)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to rename archive file: %s", filePath)
-		return "", err
+		return finalFile, err
 	}
-	finalFile = path.Base(finalPath) // Only filename part
+	finalFile.FileName = path.Base(finalPath) // Only filename part
+	finalFile.BytesWritten = fi.Size()
+	finalFile.FileName = path.Base(finalPath) // Only filename part
+	finalFile.ChunksWritten = rf.ChunksWritten
 
 	rf.Logger.Info("Renamed",
 		zap.String("old", filePath),
@@ -97,7 +100,7 @@ func (rf *FileArchive) finalizeArchive() (finalFile string, err error) {
 	err = os.Chmod(finalPath, fileMode)
 	if err != nil {
 		err = errors.Wrapf(err, "unable to chmod archive file: %s", finalPath)
-		return "", err
+		return finalFile, err
 	}
 
 	return finalFile, nil
