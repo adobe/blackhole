@@ -36,10 +36,14 @@ import (
 // Typically one would rename the file to the final desired name
 // OR upload the file to S3 or Azure Blobstore. Users of this
 // library must provide this call back implementation.
-type FinalizerFunc func() (finalName string, err error)
+type FinalizerFunc func() (finalFile ArchiveFileDetails, err error)
 
-type ArchiveFileStats struct {
-	ContentSize int
+type ArchiveFileDetails struct {
+	FileName      string // Not filled when it is a checksum-only writer.
+	BytesWritten  int64  // Always filled
+	ChunksWritten int64  // Always filled, but does not accurately represent rows/requests.
+	RowsWritten   int64  // Not filled by archiver
+	Checksum      string // Sometimes filled: only by checksum-only writer.
 }
 
 // BasicArchive encapsulates some common functionality between
@@ -60,9 +64,10 @@ type BasicArchive struct {
 	compress         bool
 	bufferSize       int
 	bytesWritten     int64 // to see if file is empty at Close (during finalize)
+	ChunksWritten    int64
 	Finalizer        FinalizerFunc
-	finalizedFiles   []string
-	finalizedDetails map[string]ArchiveFileStats
+	finalizedDetails map[string]ArchiveFileDetails
+	//finalizedFiles   []string
 }
 
 func NewBasicArchive(stageDir, prefix, extension string,
@@ -76,7 +81,7 @@ func NewBasicArchive(stageDir, prefix, extension string,
 		stageDir:         stageDir,
 		prefix:           prefix,
 		extension:        extension,
-		finalizedDetails: make(map[string]ArchiveFileStats),
+		finalizedDetails: make(map[string]ArchiveFileDetails),
 	}
 	for _, option := range options {
 		option(ba)
@@ -129,6 +134,7 @@ func (rf *BasicArchive) Write(buf []byte) (int, error) {
 	}
 
 	rf.bytesWritten += int64(len(buf))
+	rf.ChunksWritten += 1
 	// above counter is not meant to be accurate.
 	// so we ignore the cases if actual write below
 	// errors out.
@@ -236,18 +242,15 @@ func (rf *BasicArchive) Close() (err error) {
 		}
 
 		if rf.writing && rf.Finalizer != nil {
-			var finalName string
-			finalName, err = rf.Finalizer()
+			finalFile, err := rf.Finalizer()
 			rf.Logger.Debug("Finalizer returned",
-				zap.String("finalName", finalName),
+				zap.String("finalName", finalFile.FileName),
 				zap.Error(err))
 			if err != nil {
 				return err
 			}
-			if finalName != "" {
-				rf.finalizedFiles = append(rf.finalizedFiles, finalName)
-				rf.finalizedDetails[finalName] = ArchiveFileStats{
-					ContentSize: int(rf.bytesWritten)}
+			if finalFile.FileName != "" {
+				rf.finalizedDetails[finalFile.FileName] = finalFile
 			}
 		}
 	}
@@ -256,8 +259,8 @@ func (rf *BasicArchive) Close() (err error) {
 	return err
 }
 
-func (rf *BasicArchive) FinalizedFiles() ([]string, map[string]ArchiveFileStats) {
-	return rf.finalizedFiles, rf.finalizedDetails
+func (rf *BasicArchive) FinalizedFiles() map[string]ArchiveFileDetails {
+	return rf.finalizedDetails
 }
 
 func (rf *BasicArchive) Reset() {
